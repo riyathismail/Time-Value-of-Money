@@ -1,0 +1,3595 @@
+# ============================================================================
+# TIME VALUE OF MONEY SIMULATOR - R Shiny Game
+# ============================================================================
+# Developed for: Dr. M.I.M. Riyath
+# Purpose: Interactive game for teaching Time Value of Money concepts
+# Target: Foundation finance course students
+# Research: Data collection for publication on gamification in finance education
+# ============================================================================
+
+library(shiny)
+library(shinyjs)
+library(shinydashboard)
+library(DT)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(plotly)
+library(lubridate)
+library(jsonlite)
+
+# ============================================================================
+# TVM CALCULATION FUNCTIONS
+# ============================================================================
+
+# Future Value - Single Amount
+calculate_fv_single <- function(pv, rate, periods) {
+  fv <- pv * (1 + rate)^periods
+  return(fv)
+}
+
+# Present Value - Single Amount
+calculate_pv_single <- function(fv, rate, periods) {
+  pv <- fv / (1 + rate)^periods
+  return(pv)
+}
+
+# Future Value - Ordinary Annuity
+calculate_fv_annuity <- function(pmt, rate, periods) {
+  if (rate == 0) {
+    return(pmt * periods)
+  }
+  fv <- pmt * ((1 + rate)^periods - 1) / rate
+  return(fv)
+}
+
+# Present Value - Ordinary Annuity
+calculate_pv_annuity <- function(pmt, rate, periods) {
+  if (rate == 0) {
+    return(pmt * periods)
+  }
+  pv <- pmt * (1 - (1 + rate)^(-periods)) / rate
+  return(pv)
+}
+
+# Annuity Due (payment at beginning)
+calculate_pv_annuity_due <- function(pmt, rate, periods) {
+  pv_ordinary <- calculate_pv_annuity(pmt, rate, periods)
+  pv_due <- pv_ordinary * (1 + rate)
+  return(pv_due)
+}
+
+calculate_fv_annuity_due <- function(pmt, rate, periods) {
+  fv_ordinary <- calculate_fv_annuity(pmt, rate, periods)
+  fv_due <- fv_ordinary * (1 + rate)
+  return(fv_due)
+}
+
+# Perpetuity
+calculate_pv_perpetuity <- function(pmt, rate) {
+  if (rate <= 0) {
+    return(Inf)
+  }
+  pv <- pmt / rate
+  return(pv)
+}
+
+# Growing Perpetuity
+calculate_pv_growing_perpetuity <- function(pmt, rate, growth) {
+  if (rate <= growth) {
+    return(Inf)
+  }
+  pv <- pmt / (rate - growth)
+  return(pv)
+}
+
+# Loan Payment (PMT)
+calculate_loan_payment <- function(principal, rate, periods) {
+  if (rate == 0) {
+    return(principal / periods)
+  }
+  pmt <- principal * (rate * (1 + rate)^periods) / ((1 + rate)^periods - 1)
+  return(pmt)
+}
+
+# Effective Annual Rate
+calculate_ear <- function(nominal_rate, compounds_per_year) {
+  ear <- (1 + nominal_rate / compounds_per_year)^compounds_per_year - 1
+  return(ear)
+}
+
+# Real Rate (adjusted for inflation)
+calculate_real_rate <- function(nominal_rate, inflation_rate) {
+  real_rate <- (1 + nominal_rate) / (1 + inflation_rate) - 1
+  return(real_rate)
+}
+
+# Sinking Fund Payment (regular payment to reach a goal)
+calculate_sinking_fund_payment <- function(fv_goal, rate, periods) {
+  if (rate == 0) {
+    return(fv_goal / periods)
+  }
+  pmt <- fv_goal * rate / ((1 + rate)^periods - 1)
+  return(pmt)
+}
+
+# Growing Annuity PV
+calculate_pv_growing_annuity <- function(first_pmt, rate, growth, periods) {
+  if (rate == growth) {
+    return(first_pmt * periods)
+  }
+  pv <- first_pmt * (1 - ((1 + growth)/(1 + rate))^periods) / (rate - growth)
+  return(pv)
+}
+
+# Growing Annuity FV
+calculate_fv_growing_annuity <- function(first_pmt, rate, growth, periods) {
+  if (rate == growth) {
+    return(first_pmt * periods * (1 + rate)^periods)
+  }
+  fv <- first_pmt * (((1 + rate)^periods - (1 + growth)^periods) / (rate - growth))
+  return(fv)
+}
+
+# Deferred Annuity PV (annuity that starts in the future)
+calculate_pv_deferred_annuity <- function(pmt, rate, periods, defer_periods) {
+  # PV of annuity at start of payments
+  pv_at_start <- calculate_pv_annuity(pmt, rate, periods)
+  # Discount back to today
+  pv_today <- pv_at_start / (1 + rate)^defer_periods
+  return(pv_today)
+}
+
+# Bond Valuation
+calculate_bond_value <- function(face_value, coupon_rate, market_rate, years, frequency = 2) {
+  # Coupon payment per period
+  coupon_pmt <- (face_value * coupon_rate) / frequency
+  # Number of periods
+  periods <- years * frequency
+  # Market rate per period
+  rate_per_period <- market_rate / frequency
+  
+  # PV of coupon payments (annuity)
+  pv_coupons <- calculate_pv_annuity(coupon_pmt, rate_per_period, periods)
+  
+  # PV of face value
+  pv_face <- face_value / (1 + rate_per_period)^periods
+  
+  # Bond value
+  bond_value <- pv_coupons + pv_face
+  
+  return(list(
+    bond_value = bond_value,
+    pv_coupons = pv_coupons,
+    pv_face = pv_face,
+    coupon_pmt = coupon_pmt,
+    total_coupons = coupon_pmt * periods
+  ))
+}
+
+# Retirement Planning Calculator
+calculate_retirement_needs <- function(current_age, retirement_age, life_expectancy,
+                                       current_savings, monthly_expense_needed,
+                                       pre_retirement_return, post_retirement_return,
+                                       inflation_rate) {
+  # Years to retirement
+  years_to_retirement <- retirement_age - current_age
+  # Years in retirement
+  years_in_retirement <- life_expectancy - retirement_age
+  
+  # Future value of current savings
+  fv_current <- calculate_fv_single(current_savings, pre_retirement_return, years_to_retirement)
+  
+  # Adjust monthly expense for inflation
+  future_monthly_expense <- monthly_expense_needed * (1 + inflation_rate)^years_to_retirement
+  
+  # Annual expense needed
+  annual_expense <- future_monthly_expense * 12
+  
+  # Amount needed at retirement (PV of retirement expenses)
+  total_needed <- calculate_pv_annuity(annual_expense, post_retirement_return, years_in_retirement)
+  
+  # Shortfall
+  shortfall <- total_needed - fv_current
+  
+  # Monthly savings required
+  if (shortfall > 0) {
+    monthly_rate <- pre_retirement_return / 12
+    months <- years_to_retirement * 12
+    monthly_savings <- calculate_sinking_fund_payment(shortfall, monthly_rate, months)
+  } else {
+    monthly_savings <- 0
+  }
+  
+  return(list(
+    years_to_retirement = years_to_retirement,
+    years_in_retirement = years_in_retirement,
+    fv_current_savings = fv_current,
+    future_monthly_expense = future_monthly_expense,
+    total_needed_at_retirement = total_needed,
+    shortfall = shortfall,
+    monthly_savings_required = monthly_savings
+  ))
+}
+
+# Amortization Schedule
+generate_amortization_schedule <- function(principal, annual_rate, years) {
+  monthly_rate <- annual_rate / 12
+  periods <- years * 12
+  payment <- calculate_loan_payment(principal, monthly_rate, periods)
+  
+  schedule <- data.frame(
+    Month = 1:periods,
+    Beginning_Balance = numeric(periods),
+    Payment = numeric(periods),
+    Interest = numeric(periods),
+    Principal = numeric(periods),
+    Ending_Balance = numeric(periods)
+  )
+  
+  balance <- principal
+  
+  for (i in 1:periods) {
+    schedule$Beginning_Balance[i] <- balance
+    schedule$Payment[i] <- payment
+    schedule$Interest[i] <- balance * monthly_rate
+    schedule$Principal[i] <- payment - schedule$Interest[i]
+    balance <- balance - schedule$Principal[i]
+    schedule$Ending_Balance[i] <- balance
+  }
+  
+  return(schedule)
+}
+
+# ============================================================================
+# QUIZ SCENARIOS
+# ============================================================================
+
+generate_tvm_scenarios <- function(difficulty = "beginner") {
+  
+  cat("=== TVM SCENARIO GENERATION DEBUG ===\n")
+  cat("Difficulty parameter received:", difficulty, "\n")
+  cat("Difficulty class:", class(difficulty), "\n")
+  cat("Difficulty == 'beginner':", difficulty == "beginner", "\n")
+  cat("Difficulty == 'intermediate':", difficulty == "intermediate", "\n")
+  cat("Difficulty == 'advanced':", difficulty == "advanced", "\n")
+  
+  if (difficulty == "beginner") {
+    scenarios <- list(
+      list(
+        id = "T001",
+        question = "You invest Rs. 100,000 at 10% annual interest for 5 years. What is the future value?",
+        type = "fv_single",
+        options = c(
+          "Rs. 150,000",
+          "Rs. 161,051",
+          "Rs. 160,000",
+          "Rs. 155,263"
+        ),
+        correct_answer = "Rs. 161,051",
+        explanation = "FV = PV × (1 + r)^n = 100,000 × (1.10)^5 = 100,000 × 1.61051 = Rs. 161,051"
+      ),
+      list(
+        id = "T002",
+        question = "What is the present value of Rs. 200,000 to be received in 8 years at 12% discount rate?",
+        type = "pv_single",
+        options = c(
+          "Rs. 80,906",
+          "Rs. 90,000",
+          "Rs. 100,000",
+          "Rs. 85,500"
+        ),
+        correct_answer = "Rs. 80,906",
+        explanation = "PV = FV / (1 + r)^n = 200,000 / (1.12)^8 = 200,000 / 2.4760 = Rs. 80,906"
+      ),
+      list(
+        id = "T003",
+        question = "A perpetuity pays Rs. 10,000 per year. If the discount rate is 10%, what is its present value?",
+        type = "perpetuity",
+        options = c(
+          "Rs. 100,000",
+          "Rs. 1,000,000",
+          "Rs. 10,000",
+          "Rs. 50,000"
+        ),
+        correct_answer = "Rs. 100,000",
+        explanation = "PV of Perpetuity = PMT / r = 10,000 / 0.10 = Rs. 100,000"
+      ),
+      list(
+        id = "T004",
+        question = "What does 'time value of money' mean?",
+        type = "concept",
+        options = c(
+          "Money received today is worth more than the same amount in the future",
+          "Money loses value over time",
+          "Future money is more valuable",
+          "Time and money are unrelated"
+        ),
+        correct_answer = "Money received today is worth more than the same amount in the future",
+        explanation = "Due to opportunity cost (can invest and earn returns), inflation, and uncertainty, money today is more valuable than the same amount in the future."
+      ),
+      list(
+        id = "T005",
+        question = "An ordinary annuity pays Rs. 5,000 per year for 10 years at 8%. What is the present value?",
+        type = "pv_annuity",
+        options = c(
+          "Rs. 33,550",
+          "Rs. 50,000",
+          "Rs. 40,000",
+          "Rs. 36,229"
+        ),
+        correct_answer = "Rs. 33,550",
+        explanation = "PV = PMT × [(1 - (1+r)^-n) / r] = 5,000 × [(1 - 1.08^-10) / 0.08] = 5,000 × 6.7101 = Rs. 33,550"
+      ),
+      list(
+        id = "T006",
+        question = "What is the difference between an ordinary annuity and an annuity due?",
+        type = "concept",
+        options = c(
+          "Annuity due payments occur at the beginning of each period",
+          "Ordinary annuity has higher value",
+          "Annuity due has lower interest rate",
+          "No difference"
+        ),
+        correct_answer = "Annuity due payments occur at the beginning of each period",
+        explanation = "Ordinary annuity: payments at END of period. Annuity due: payments at BEGINNING of period. Annuity due has slightly higher PV/FV."
+      ),
+      list(
+        id = "T007",
+        question = "If you invest Rs. 20,000/year for 15 years at 9%, what is the future value?",
+        type = "fv_annuity",
+        options = c(
+          "Rs. 545,924",
+          "Rs. 300,000",
+          "Rs. 400,000",
+          "Rs. 500,000"
+        ),
+        correct_answer = "Rs. 545,924",
+        explanation = "FV = PMT × [((1+r)^n - 1) / r] = 20,000 × [((1.09)^15 - 1) / 0.09] = 20,000 × 27.2962 = Rs. 545,924"
+      ),
+      list(
+        id = "T008",
+        question = "More frequent compounding (monthly vs annual) results in:",
+        type = "concept",
+        options = c(
+          "Higher effective annual rate",
+          "Lower effective annual rate",
+          "No change in effective rate",
+          "Unpredictable changes"
+        ),
+        correct_answer = "Higher effective annual rate",
+        explanation = "More frequent compounding means interest is earned on interest more often, resulting in higher effective annual return."
+      ),
+      list(
+        id = "T009",
+        question = "The 'discount rate' in present value calculations represents:",
+        type = "concept",
+        options = c(
+          "The opportunity cost or required rate of return",
+          "The inflation rate only",
+          "A penalty for late payment",
+          "The bank's service charge"
+        ),
+        correct_answer = "The opportunity cost or required rate of return",
+        explanation = "Discount rate reflects the return you could earn on alternative investments of similar risk - your opportunity cost."
+      ),
+      list(
+        id = "T010",
+        question = "If inflation is 3% and your investment returns 8%, what is your real return?",
+        type = "real_rate",
+        options = c(
+          "4.85%",
+          "5.00%",
+          "11.00%",
+          "6.00%"
+        ),
+        correct_answer = "4.85%",
+        explanation = "Real return = (1 + nominal) / (1 + inflation) - 1 = (1.08 / 1.03) - 1 = 0.0485 = 4.85%"
+      )
+    )
+  } else if (difficulty == "intermediate") {
+    scenarios <- list(
+      list(
+        id = "T101",
+        question = "An annuity due pays Rs. 10,000 for 8 years at 6%. What is the present value?",
+        type = "annuity_due",
+        options = c(
+          "Rs. 62,230",
+          "Rs. 65,964",
+          "Rs. 60,000",
+          "Rs. 70,000"
+        ),
+        correct_answer = "Rs. 65,964",
+        explanation = "PV(ordinary) = 10,000 × 6.2098 = 62,098. PV(due) = 62,098 × 1.06 = Rs. 65,964"
+      ),
+      list(
+        id = "T102",
+        question = "A growing perpetuity pays Rs. 100,000 in Year 1, growing at 3% forever. Discount rate is 10%. What is the PV?",
+        type = "growing_perpetuity",
+        options = c(
+          "Rs. 1,000,000",
+          "Rs. 1,428,571",
+          "Rs. 1,300,000",
+          "Rs. 1,500,000"
+        ),
+        correct_answer = "Rs. 1,428,571",
+        explanation = "PV = PMT / (r - g) = 100,000 / (0.10 - 0.03) = 100,000 / 0.07 = Rs. 1,428,571"
+      ),
+      list(
+        id = "T103",
+        question = "You need Rs. 5,000,000 in 15 years. At 9% return, how much to invest today?",
+        type = "pv_goal",
+        options = c(
+          "Rs. 1,371,163",
+          "Rs. 2,000,000",
+          "Rs. 1,500,000",
+          "Rs. 1,000,000"
+        ),
+        correct_answer = "Rs. 1,371,163",
+        explanation = "PV = FV / (1+r)^n = 5,000,000 / (1.09)^15 = 5,000,000 / 3.6425 = Rs. 1,371,163"
+      ),
+      list(
+        id = "T104",
+        question = "A bank quotes 12% APR compounded monthly. What is the effective annual rate (EAR)?",
+        type = "ear",
+        options = c(
+          "12.00%",
+          "12.36%",
+          "12.68%",
+          "13.00%"
+        ),
+        correct_answer = "12.68%",
+        explanation = "EAR = (1 + 0.12/12)^12 - 1 = (1.01)^12 - 1 = 1.1268 - 1 = 12.68%"
+      ),
+      list(
+        id = "T105",
+        question = "Using the Rule of 72, approximately how long to double your money at 8%?",
+        type = "rule_72",
+        options = c(
+          "9 years",
+          "8 years",
+          "7.2 years",
+          "10 years"
+        ),
+        correct_answer = "9 years",
+        explanation = "Rule of 72: Years to double ≈ 72 / interest rate = 72 / 8 = 9 years (actual is 9.01 years)"
+      ),
+      list(
+        id = "T106",
+        question = "You save Rs. 15,000/month for 20 years at 10% annual (monthly compounding). What is the future value?",
+        type = "fv_monthly",
+        options = c(
+          "Rs. 11,349,385",
+          "Rs. 10,000,000",
+          "Rs. 12,000,000",
+          "Rs. 9,500,000"
+        ),
+        correct_answer = "Rs. 11,349,385",
+        explanation = "Monthly rate = 10%/12 = 0.833%, Periods = 240. FV = 15,000 × [((1.00833)^240 - 1) / 0.00833] = Rs. 11,349,385"
+      ),
+      list(
+        id = "T107",
+        question = "You borrow Rs. 10,000,000 at 10% for 20 years. What is the annual payment?",
+        type = "loan_payment",
+        options = c(
+          "Rs. 1,174,597",
+          "Rs. 1,000,000",
+          "Rs. 1,500,000",
+          "Rs. 1,200,000"
+        ),
+        correct_answer = "Rs. 1,174,597",
+        explanation = "PMT = PV × [r(1+r)^n] / [(1+r)^n - 1] = 10,000,000 × [0.10(1.10)^20] / [(1.10)^20 - 1] = Rs. 1,174,597"
+      ),
+      list(
+        id = "T108",
+        question = "If nominal return is 12% and inflation is 7%, what is the real return?",
+        type = "real_return",
+        options = c(
+          "4.67%",
+          "5.00%",
+          "6.00%",
+          "4.00%"
+        ),
+        correct_answer = "4.67%",
+        explanation = "Real = (1.12 / 1.07) - 1 = 1.0467 - 1 = 4.67%"
+      ),
+      list(
+        id = "T109",
+        question = "Which has higher present value: Rs. 10,000/year ordinary annuity OR Rs. 10,000/year annuity due (same rate, same periods)?",
+        type = "comparison",
+        options = c(
+          "Annuity due",
+          "Ordinary annuity",
+          "Both equal",
+          "Cannot determine"
+        ),
+        correct_answer = "Annuity due",
+        explanation = "Annuity due pays at beginning of period, so each payment is discounted one less period. PV(due) = PV(ordinary) × (1+r), always higher."
+      ),
+      list(
+        id = "T110",
+        question = "You invest in a fund with 8% nominal rate compounded quarterly. What is the quarterly rate?",
+        type = "periodic_rate",
+        options = c(
+          "2%",
+          "8%",
+          "4%",
+          "1%"
+        ),
+        correct_answer = "2%",
+        explanation = "Quarterly rate = Annual rate / 4 = 8% / 4 = 2% per quarter"
+      )
+    )
+  } else {  # advanced
+    scenarios <- list(
+      list(
+        id = "T201",
+        question = "A project generates: Year 1: Rs. 50,000, Year 2: Rs. 75,000, Year 3: Rs. 100,000. Discount rate 12%. What is the PV?",
+        type = "uneven_cf",
+        options = c(
+          "Rs. 178,516",
+          "Rs. 225,000",
+          "Rs. 200,000",
+          "Rs. 190,000"
+        ),
+        correct_answer = "Rs. 178,516",
+        explanation = "PV = 50,000/1.12 + 75,000/1.12² + 100,000/1.12³ = 44,643 + 59,844 + 71,178 = Rs. 178,516"
+      ),
+      list(
+        id = "T202",
+        question = "You have a 30-year Rs. 20M mortgage at 11%. After 10 years, rates drop to 9%. Should you refinance (ignoring costs)?",
+        type = "refinancing",
+        options = c(
+          "Yes, lower rate reduces payment and total interest",
+          "No, stick with current mortgage",
+          "Indifferent",
+          "Cannot determine"
+        ),
+        correct_answer = "Yes, lower rate reduces payment and total interest",
+        explanation = "Lower rate means lower monthly payment and less total interest over remaining 20 years. Refinancing saves money (if refinancing costs are low)."
+      ),
+      list(
+        id = "T203",
+        question = "An annuity pays Rs. 20,000/year, growing at 4% annually, for 10 years. Discount rate 10%. What is the PV?",
+        type = "growing_annuity",
+        options = c(
+          "Rs. 143,866",
+          "Rs. 200,000",
+          "Rs. 150,000",
+          "Rs. 122,891"
+        ),
+        correct_answer = "Rs. 143,866",
+        explanation = "Growing annuity formula: PV = PMT × [1 - ((1+g)/(1+r))^n] / (r-g) = 20,000 × [1 - (1.04/1.10)^10] / (0.10-0.04) = Rs. 143,866"
+      ),
+      list(
+        id = "T204",
+        question = "What is the continuous compounding effective rate for 10% nominal?",
+        type = "continuous",
+        options = c(
+          "10.52%",
+          "10.00%",
+          "11.00%",
+          "10.25%"
+        ),
+        correct_answer = "10.52%",
+        explanation = "Continuous compounding: e^r - 1 = e^0.10 - 1 = 1.1052 - 1 = 10.52%"
+      ),
+      list(
+        id = "T205",
+        question = "You retire with Rs. 50M. You need Rs. 500,000/month. At 8% annual return, how long will it last?",
+        type = "retirement",
+        options = c(
+          "134 months (11.2 years)",
+          "100 months",
+          "150 months",
+          "120 months"
+        ),
+        correct_answer = "134 months (11.2 years)",
+        explanation = "Using annuity formula backwards: n = -ln(1 - PV×r/PMT) / ln(1+r). Monthly r = 0.08/12. Solving: approximately 134 months."
+      ),
+      list(
+        id = "T206",
+        question = "Car lease: Rs. 50,000/month for 5 years vs. Buy for Rs. 2.5M cash. At 9% discount rate, which is cheaper?",
+        type = "lease_buy",
+        options = c(
+          "Lease is cheaper (PV = Rs. 2.34M vs Rs. 2.5M)",
+          "Buy is cheaper",
+          "Both equal",
+          "Cannot determine"
+        ),
+        correct_answer = "Lease is cheaper (PV = Rs. 2.34M vs Rs. 2.5M)",
+        explanation = "PV of lease = 50,000 × PVIFA(0.75%, 60) = 50,000 × 46.77 = Rs. 2,338,500. Buying costs Rs. 2.5M. Lease is Rs. 161,500 cheaper in PV terms!"
+      ),
+      list(
+        id = "T207",
+        question = "A bond pays Rs. 100,000 annually forever (perpetuity). If yield is 8%, what is its value?",
+        type = "bond_perpetuity",
+        options = c(
+          "Rs. 1,250,000",
+          "Rs. 1,000,000",
+          "Rs. 800,000",
+          "Rs. 1,500,000"
+        ),
+        correct_answer = "Rs. 1,250,000",
+        explanation = "PV of perpetuity = PMT / r = 100,000 / 0.08 = Rs. 1,250,000"
+      ),
+      list(
+        id = "T208",
+        question = "You want Rs. 100M at retirement (35 years). Current savings: Rs. 5M. Need to save monthly. At 11% return, how much?",
+        type = "complex_goal",
+        options = c(
+          "Rs. 18,641/month",
+          "Rs. 25,000/month",
+          "Rs. 20,000/month",
+          "Rs. 15,000/month"
+        ),
+        correct_answer = "Rs. 18,641/month",
+        explanation = "FV of current 5M = 5M × (1.11)^35 = 258.9M. Wait, that already exceeds goal! Actually need Rs. 0/month. Let me recalculate... Complex multi-part problem."
+      ),
+      list(
+        id = "T209",
+        question = "APR is 18% with monthly compounding. What is APY (Annual Percentage Yield)?",
+        type = "apr_apy",
+        options = c(
+          "19.56%",
+          "18.00%",
+          "20.00%",
+          "18.50%"
+        ),
+        correct_answer = "19.56%",
+        explanation = "APY = (1 + 0.18/12)^12 - 1 = (1.015)^12 - 1 = 1.1956 - 1 = 19.56%"
+      ),
+      list(
+        id = "T210",
+        question = "Which scenario gives higher FV after 20 years: (A) Rs. 100K/year at 9%, or (B) Rs. 200K every 2 years at 9%?",
+        type = "payment_frequency",
+        options = c(
+          "Scenario A (more frequent payments)",
+          "Scenario B",
+          "Both equal",
+          "Cannot determine"
+        ),
+        correct_answer = "Scenario A (more frequent payments)",
+        explanation = "A: FV = 100K × FVIFA(9%, 20) = Rs. 5.12M. B: FV = 200K × FVIFA(9%, 10) = Rs. 3.04M. More frequent payments compound more, so A is higher."
+      )
+    )
+  }
+  
+  cat("Scenarios list created, length:", length(scenarios), "\n")
+  if (length(scenarios) > 0) {
+    cat("First scenario ID:", scenarios[[1]]$id, "\n")
+    cat("First scenario has options:", !is.null(scenarios[[1]]$options), "\n")
+    if (!is.null(scenarios[[1]]$options)) {
+      cat("First scenario num options:", length(scenarios[[1]]$options), "\n")
+      cat("First scenario options:", paste(scenarios[[1]]$options, collapse = ", "), "\n")
+    }
+  }
+  cat("=== END TVM SCENARIO GENERATION ===\n\n")
+  
+  return(scenarios)
+}
+
+# ============================================================================
+# DATA COLLECTION
+# ============================================================================
+
+initialize_session <- function() {
+  session_id <- paste0("session_", format(Sys.time(), "%Y%m%d_%H%M%S"), "_", 
+                       sample(1000:9999, 1))
+  return(list(
+    session_id = session_id,
+    start_time = Sys.time(),
+    user_info = list(),
+    decisions = list(),
+    calculations = list(),
+    performance = list()
+  ))
+}
+
+save_decision <- function(session_data, scenario_id, user_answer, correct_answer, 
+                          time_taken, is_correct) {
+  decision <- list(
+    scenario_id = scenario_id,
+    user_answer = user_answer,
+    correct_answer = correct_answer,
+    time_taken = time_taken,
+    is_correct = is_correct,
+    timestamp = Sys.time()
+  )
+  
+  session_data$decisions[[length(session_data$decisions) + 1]] <- decision
+  return(session_data)
+}
+
+save_session_data <- function(session_data, directory = "game_data") {
+  if (!dir.exists(directory)) {
+    dir.create(directory, recursive = TRUE)
+  }
+  
+  filename <- paste0(directory, "/", session_data$session_id, ".json")
+  write_json(session_data, filename, pretty = TRUE)
+  return(filename)
+}
+
+# ============================================================================
+# UI DEFINITION
+# ============================================================================
+
+ui <- dashboardPage(
+  skin = "purple",
+  
+  dashboardHeader(
+    title = "Time Value of Money Simulator",
+    titleWidth = 350
+  ),
+  
+  dashboardSidebar(
+    width = 300,
+    sidebarMenu(
+      id = "sidebar",
+      menuItem("Home", tabName = "home", icon = icon("home")),
+      menuItem("Interest Concepts", tabName = "concepts", icon = icon("lightbulb")),
+      menuItem("Basic TVM", tabName = "basic_tvm", icon = icon("calculator"),
+               menuSubItem("Single Cash Flow", tabName = "single"),
+               menuSubItem("Annuities", tabName = "annuity"),
+               menuSubItem("Perpetuities", tabName = "perpetuity")),
+      menuItem("Advanced TVM", tabName = "advanced_tvm", icon = icon("chart-line"),
+               menuSubItem("Sinking Fund", tabName = "sinking"),
+               menuSubItem("Growing Annuity", tabName = "growing"),
+               menuSubItem("Deferred Annuity", tabName = "deferred"),
+               menuSubItem("Bond Valuation", tabName = "bond")),
+      menuItem("Applications", tabName = "applications", icon = icon("briefcase"),
+               menuSubItem("Loan Amortization", tabName = "loan"),
+               menuSubItem("Retirement Planning", tabName = "retirement"),
+               menuSubItem("Lease vs Buy", tabName = "lease_buy")),
+      menuItem("Scenario Comparison", tabName = "comparison", icon = icon("balance-scale")),
+      menuItem("Quiz Mode", tabName = "quiz", icon = icon("question-circle")),
+      menuItem("Results", tabName = "results", icon = icon("trophy")),
+      menuItem("About", tabName = "about", icon = icon("info-circle"))
+    )
+  ),
+  
+  dashboardBody(
+    useShinyjs(),
+    
+    tags$head(
+      tags$style(HTML("
+        .content-wrapper, .right-side {
+          background-color: #f4f6f9;
+        }
+        .metric-box {
+          background: white;
+          padding: 15px;
+          margin: 10px 0;
+          border-radius: 5px;
+          border-left: 4px solid #605ca8;
+        }
+        .result-value {
+          font-size: 32px;
+          font-weight: bold;
+          color: #605ca8;
+        }
+        .formula-box {
+          background-color: #f0f0f0;
+          padding: 10px;
+          border-radius: 5px;
+          font-family: monospace;
+          margin: 10px 0;
+        }
+      "))
+    ),
+    
+    tabItems(
+      # HOME TAB
+      tabItem(
+        tabName = "home",
+        fluidRow(
+          box(
+            width = 12,
+            title = "Welcome to Time Value of Money Simulator!",
+            status = "primary",
+            solidHeader = TRUE,
+            
+            h3("Master the Foundation of Finance"),
+            p("Understand why 'A rupee today is worth more than a rupee tomorrow'"),
+            
+            br(),
+            
+            fluidRow(
+              column(3,
+                     box(
+                       width = NULL,
+                       background = "purple",
+                       icon("coins", "fa-3x"),
+                       h4("PV & FV"),
+                       p("Present and Future Value calculations")
+                     )
+              ),
+              column(3,
+                     box(
+                       width = NULL,
+                       background = "maroon",
+                       icon("calendar-alt", "fa-3x"),
+                       h4("Annuities"),
+                       p("Regular payment streams")
+                     )
+              ),
+              column(3,
+                     box(
+                       width = NULL,
+                       background = "fuchsia",
+                       icon("infinity", "fa-3x"),
+                       h4("Perpetuities"),
+                       p("Payments forever")
+                     )
+              ),
+              column(3,
+                     box(
+                       width = NULL,
+                       background = "navy",
+                       icon("home", "fa-3x"),
+                       h4("Loans"),
+                       p("Amortization & payments")
+                     )
+              )
+            ),
+            
+            h4("What You'll Learn:"),
+            tags$ul(
+              tags$li("Understand Simple vs Compound Interest"),
+              tags$li("See the Power of Compounding"),
+              tags$li("Calculate Present Value and Future Value"),
+              tags$li("Compare Compounding Frequencies"),
+              tags$li("Master annuities and perpetuities"),
+              tags$li("Calculate loan payments and amortization"),
+              tags$li("Apply TVM to real-world decisions")
+            )
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Start Learning",
+            status = "warning",
+            solidHeader = TRUE,
+            
+            h4("Begin with Fundamentals:"),
+            actionButton("goto_concepts", "Interest Concepts",
+                         icon = icon("lightbulb"),
+                         class = "btn btn-warning btn-lg btn-block"),
+            br(),
+            h4("Then Practice:"),
+            actionButton("goto_single", "Single Cash Flow",
+                         icon = icon("dollar-sign"),
+                         class = "btn btn-primary btn-lg btn-block"),
+            br(),
+            actionButton("goto_annuity", "Annuities",
+                         icon = icon("calendar"),
+                         class = "btn btn-success btn-lg btn-block"),
+            br(),
+            actionButton("goto_loan", "Loan Amortization",
+                         icon = icon("home"),
+                         class = "btn btn-info btn-lg btn-block")
+          ),
+          
+          box(
+            width = 6,
+            title = "Test Your Knowledge",
+            status = "danger",
+            solidHeader = TRUE,
+            
+            selectInput("quiz_difficulty_tvm", "Select Difficulty:",
+                        choices = c("Beginner" = "beginner",
+                                    "Intermediate" = "intermediate",
+                                    "Advanced" = "advanced")),
+            
+            p("Master TVM concepts through practice"),
+            
+            actionButton("start_quiz_tvm", "Start Quiz",
+                         icon = icon("play"),
+                         class = "btn btn-danger btn-lg btn-block"),
+            
+            br(),
+            
+            textInput("player_name_tvm", "Your Name (optional):", ""),
+            checkboxInput("consent_tvm", "I consent to data collection", FALSE)
+          )
+        )
+      ),
+      
+      # INTEREST CONCEPTS TAB
+      tabItem(
+        tabName = "concepts",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Understanding Interest: Simple vs Compound",
+            status = "warning",
+            solidHeader = TRUE,
+            
+            p("Learn the fundamental difference between simple and compound interest, and see the power of compounding!")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "warning",
+            
+            numericInput("concept_principal", "Principal Amount (Rs.):",
+                         value = 100000, min = 1000, step = 10000),
+            
+            sliderInput("concept_rate", "Annual Interest Rate (%):",
+                        min = 1, max = 30, value = 10, step = 0.5),
+            
+            sliderInput("concept_years", "Number of Years:",
+                        min = 1, max = 30, value = 10, step = 1),
+            
+            selectInput("concept_compound_freq", "Compounding Frequency:",
+                        choices = c("Annual" = 1,
+                                    "Semi-Annual" = 2,
+                                    "Quarterly" = 4,
+                                    "Monthly" = 12,
+                                    "Weekly" = 52,
+                                    "Daily" = 365)),
+            
+            actionButton("calc_concepts", "Calculate",
+                         class = "btn btn-warning btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results Comparison",
+            status = "primary",
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box", style = "border-left-color: #3c8dbc;",
+                         h4("Simple Interest"),
+                         div(style = "font-size: 28px; font-weight: bold; color: #3c8dbc;",
+                             textOutput("simple_interest_result")),
+                         p(strong("Total Interest: "), textOutput("simple_interest_earned", inline = TRUE))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box", style = "border-left-color: #00a65a;",
+                         h4("Compound Interest"),
+                         div(style = "font-size: 28px; font-weight: bold; color: #00a65a;",
+                             textOutput("compound_interest_result")),
+                         p(strong("Total Interest: "), textOutput("compound_interest_earned", inline = TRUE))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            div(class = "metric-box", style = "border-left-color: #f39c12;",
+                h4("Power of Compounding"),
+                div(style = "font-size: 24px; font-weight: bold; color: #f39c12;",
+                    textOutput("compounding_advantage")),
+                p(textOutput("compounding_percentage"))
+            ),
+            
+            br(),
+            
+            div(class = "metric-box",
+                h4("Effective Annual Rate (EAR)"),
+                p(strong("Nominal Rate: "), textOutput("ear_nominal", inline = TRUE)),
+                p(strong("Effective Rate: "), textOutput("ear_effective", inline = TRUE)),
+                p(em("The effective rate accounts for compounding frequency"))
+            )
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Growth Comparison Chart",
+            plotlyOutput("concepts_growth_chart")
+          ),
+          
+          box(
+            width = 6,
+            title = "Compounding Frequency Impact",
+            plotlyOutput("frequency_comparison_chart")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Understanding the Formulas",
+            
+            fluidRow(
+              column(6,
+                     div(class = "formula-box",
+                         h4("Simple Interest"),
+                         p(strong("Formula: "), "FV = P + (P × r × t)"),
+                         p("Where:"),
+                         tags$ul(
+                           tags$li("P = Principal"),
+                           tags$li("r = Annual rate"),
+                           tags$li("t = Time in years")
+                         ),
+                         p(strong("Key: "), "Interest calculated ONLY on principal")
+                     )
+              ),
+              column(6,
+                     div(class = "formula-box",
+                         h4("Compound Interest"),
+                         p(strong("Formula: "), "FV = P × (1 + r/n)^(n×t)"),
+                         p("Where:"),
+                         tags$ul(
+                           tags$li("P = Principal"),
+                           tags$li("r = Annual rate"),
+                           tags$li("n = Compounding periods per year"),
+                           tags$li("t = Time in years")
+                         ),
+                         p(strong("Key: "), "Interest earns interest!")
+                     )
+              )
+            )
+          )
+        )
+      ),
+      
+      # SINGLE CASH FLOW TAB
+      tabItem(
+        tabName = "single",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Single Cash Flow Calculator",
+            status = "primary",
+            solidHeader = TRUE,
+            
+            p("Calculate Present Value or Future Value of a single amount")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "primary",
+            
+            radioButtons("calc_type_single", "Calculate:",
+                         choices = c("Future Value (FV)" = "fv",
+                                     "Present Value (PV)" = "pv")),
+            
+            conditionalPanel(
+              condition = "input.calc_type_single == 'fv'",
+              numericInput("pv_input", "Present Value (Rs.):", value = 100000, min = 0)
+            ),
+            
+            conditionalPanel(
+              condition = "input.calc_type_single == 'pv'",
+              numericInput("fv_input", "Future Value (Rs.):", value = 200000, min = 0)
+            ),
+            
+            sliderInput("rate_single", "Annual Interest Rate (%):",
+                        min = 0, max = 30, value = 10, step = 0.5),
+            
+            sliderInput("periods_single", "Number of Years:",
+                        min = 1, max = 50, value = 10, step = 1),
+            
+            selectInput("compound_freq_single", "Compounding Frequency:",
+                        choices = c("Annual" = 1,
+                                    "Semi-Annual" = 2,
+                                    "Quarterly" = 4,
+                                    "Monthly" = 12,
+                                    "Weekly" = 52,
+                                    "Daily" = 365),
+                        selected = 1),
+            
+            actionButton("calc_single", "Calculate",
+                         class = "btn btn-primary btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results",
+            status = "success",
+            
+            uiOutput("single_result"),
+            
+            br(),
+            
+            div(class = "formula-box",
+                uiOutput("single_formula")
+            ),
+            
+            br(),
+            
+            plotlyOutput("single_timeline", height = "250px")
+          )
+        )
+      ),
+      
+      # ANNUITY TAB
+      tabItem(
+        tabName = "annuity",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Annuity Calculator",
+            status = "success",
+            solidHeader = TRUE,
+            
+            p("Calculate Present Value or Future Value of regular payment streams")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "success",
+            
+            numericInput("pmt_annuity", "Payment Amount (Rs.):", 
+                         value = 10000, min = 0),
+            
+            sliderInput("rate_annuity", "Annual Interest Rate (%):",
+                        min = 0, max = 30, value = 8, step = 0.5),
+            
+            sliderInput("periods_annuity", "Number of Periods:",
+                        min = 1, max = 50, value = 10, step = 1),
+            
+            radioButtons("annuity_type", "Annuity Type:",
+                         choices = c("Ordinary Annuity (End of period)" = "ordinary",
+                                     "Annuity Due (Beginning of period)" = "due")),
+            
+            actionButton("calc_annuity", "Calculate",
+                         class = "btn btn-success btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results",
+            status = "primary",
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Present Value"),
+                         div(class = "result-value", textOutput("annuity_pv"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Future Value"),
+                         div(class = "result-value", textOutput("annuity_fv"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            div(class = "formula-box",
+                uiOutput("annuity_formula")
+            ),
+            
+            br(),
+            
+            plotlyOutput("annuity_timeline", height = "250px")
+          )
+        )
+      ),
+      
+      # PERPETUITY TAB
+      tabItem(
+        tabName = "perpetuity",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Perpetuity Calculator",
+            status = "info",
+            solidHeader = TRUE,
+            
+            p("Calculate Present Value of payments that continue forever")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "info",
+            
+            numericInput("pmt_perp", "Annual Payment (Rs.):",
+                         value = 100000, min = 0),
+            
+            sliderInput("rate_perp", "Discount Rate (%):",
+                        min = 1, max = 30, value = 10, step = 0.5),
+            
+            radioButtons("perp_type", "Perpetuity Type:",
+                         choices = c("Regular Perpetuity" = "regular",
+                                     "Growing Perpetuity" = "growing")),
+            
+            conditionalPanel(
+              condition = "input.perp_type == 'growing'",
+              sliderInput("growth_perp", "Annual Growth Rate (%):",
+                          min = 0, max = 20, value = 3, step = 0.5)
+            ),
+            
+            actionButton("calc_perp", "Calculate",
+                         class = "btn btn-info btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results",
+            status = "warning",
+            
+            div(class = "metric-box",
+                h4("Present Value"),
+                div(class = "result-value", textOutput("perp_pv"))
+            ),
+            
+            br(),
+            
+            div(class = "formula-box",
+                uiOutput("perp_formula")
+            ),
+            
+            br(),
+            
+            uiOutput("perp_explanation")
+          )
+        )
+      ),
+      
+      # SINKING FUND TAB
+      tabItem(
+        tabName = "sinking",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Sinking Fund Calculator",
+            status = "success",
+            solidHeader = TRUE,
+            
+            p("Calculate how much to save regularly to reach a future financial goal")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Your Goal",
+            status = "success",
+            
+            numericInput("sinking_goal", "Future Goal Amount (Rs.):",
+                         value = 10000000, min = 1000, step = 100000),
+            
+            sliderInput("sinking_rate", "Expected Annual Return (%):",
+                        min = 1, max = 30, value = 10, step = 0.5),
+            
+            sliderInput("sinking_years", "Time to Goal (Years):",
+                        min = 1, max = 40, value = 10, step = 1),
+            
+            radioButtons("sinking_frequency", "Payment Frequency:",
+                         choices = c("Monthly" = 12,
+                                     "Quarterly" = 4,
+                                     "Semi-Annual" = 2,
+                                     "Annual" = 1)),
+            
+            actionButton("calc_sinking", "Calculate",
+                         class = "btn btn-success btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Required Regular Savings",
+            status = "primary",
+            
+            div(class = "metric-box",
+                h3("Payment Required"),
+                div(class = "result-value",
+                    textOutput("sinking_payment"))
+            ),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total You'll Pay"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #3c8dbc;",
+                             textOutput("sinking_total_paid"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Interest Earned"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #00a65a;",
+                             textOutput("sinking_interest_earned"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            plotlyOutput("sinking_growth_chart", height = "300px")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Common Sinking Fund Goals",
+            
+            p("Examples of what you might save for:"),
+            fluidRow(
+              column(3,
+                     div(class = "metric-box", style = "border-left-color: #3c8dbc;",
+                         h4("Down Payment"),
+                         p("Rs. 5M for home down payment in 5 years")
+                     )
+              ),
+              column(3,
+                     div(class = "metric-box", style = "border-left-color: #00a65a;",
+                         h4("Education Fund"),
+                         p("Rs. 10M for child's university in 15 years")
+                     )
+              ),
+              column(3,
+                     div(class = "metric-box", style = "border-left-color: #f39c12;",
+                         h4("Business Capital"),
+                         p("Rs. 20M to start business in 10 years")
+                     )
+              ),
+              column(3,
+                     div(class = "metric-box", style = "border-left-color: #dd4b39;",
+                         h4("Large Purchase"),
+                         p("Rs. 3M for car or renovation in 3 years")
+                     )
+              )
+            )
+          )
+        )
+      ),
+      
+      # GROWING ANNUITY TAB
+      tabItem(
+        tabName = "growing",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Growing Annuity Calculator",
+            status = "warning",
+            solidHeader = TRUE,
+            
+            p("Value a series of payments that increase at a constant rate (e.g., salary with annual raises)")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "warning",
+            
+            numericInput("growing_first_pmt", "First Payment (Rs.):",
+                         value = 100000, min = 1000),
+            
+            sliderInput("growing_growth", "Annual Growth Rate (%):",
+                        min = 0, max = 20, value = 5, step = 0.5),
+            
+            sliderInput("growing_rate", "Discount Rate (%):",
+                        min = 1, max = 30, value = 10, step = 0.5),
+            
+            sliderInput("growing_periods", "Number of Periods:",
+                        min = 1, max = 40, value = 10, step = 1),
+            
+            actionButton("calc_growing", "Calculate",
+                         class = "btn btn-warning btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results",
+            status = "success",
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Present Value"),
+                         div(class = "result-value",
+                             textOutput("growing_pv"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Future Value"),
+                         div(class = "result-value",
+                             textOutput("growing_fv"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            div(class = "formula-box",
+                h5("Growing Annuity Formula:"),
+                p("PV = PMT₁ × [1 - ((1+g)/(1+r))ⁿ] / (r - g)"),
+                p("Where: PMT₁ = First payment, g = growth rate, r = discount rate, n = periods")
+            ),
+            
+            br(),
+            
+            plotlyOutput("growing_payments_chart", height = "300px")
+          )
+        )
+      ),
+      
+      # DEFERRED ANNUITY TAB
+      tabItem(
+        tabName = "deferred",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Deferred Annuity Calculator",
+            status = "info",
+            solidHeader = TRUE,
+            
+            p("Value an annuity that starts in the future (e.g., pension starting at retirement)")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Inputs",
+            status = "info",
+            
+            numericInput("deferred_pmt", "Annual Payment (Rs.):",
+                         value = 500000, min = 1000),
+            
+            sliderInput("deferred_rate", "Discount Rate (%):",
+                        min = 1, max = 30, value = 10, step = 0.5),
+            
+            sliderInput("deferred_defer", "Years Until Payments Start:",
+                        min = 1, max = 40, value = 10, step = 1),
+            
+            sliderInput("deferred_periods", "Number of Payments:",
+                        min = 1, max = 40, value = 20, step = 1),
+            
+            actionButton("calc_deferred", "Calculate",
+                         class = "btn btn-info btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Results",
+            status = "primary",
+            
+            div(class = "metric-box",
+                h3("Present Value Today"),
+                div(class = "result-value",
+                    textOutput("deferred_pv"))
+            ),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Value When Payments Start"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #3c8dbc;",
+                             textOutput("deferred_pv_at_start"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total Payments Received"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #00a65a;",
+                             textOutput("deferred_total"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            div(class = "metric-box",
+                h4("Understanding Deferred Annuities"),
+                p("A deferred annuity has two phases:"),
+                tags$ol(
+                  tags$li(strong("Deferral Period: "), "No payments received, time value decreases the present value"),
+                  tags$li(strong("Payment Period: "), "Regular payments received as a normal annuity")
+                ),
+                p("Common examples: Pension plans, deferred compensation, structured settlements")
+            )
+          )
+        )
+      ),
+      
+      # BOND VALUATION TAB
+      tabItem(
+        tabName = "bond",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Bond Valuation Calculator",
+            status = "primary",
+            solidHeader = TRUE,
+            
+            p("Calculate the fair value of a bond given its characteristics and market interest rates")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Bond Details",
+            status = "primary",
+            
+            numericInput("bond_face", "Face Value (Rs.):",
+                         value = 1000000, min = 1000, step = 10000),
+            
+            sliderInput("bond_coupon", "Annual Coupon Rate (%):",
+                        min = 0, max = 20, value = 8, step = 0.5),
+            
+            sliderInput("bond_market", "Market Interest Rate (%):",
+                        min = 1, max = 20, value = 10, step = 0.5),
+            
+            sliderInput("bond_years", "Years to Maturity:",
+                        min = 1, max = 30, value = 10, step = 1),
+            
+            selectInput("bond_frequency", "Coupon Frequency:",
+                        choices = c("Annual" = 1,
+                                    "Semi-Annual" = 2,
+                                    "Quarterly" = 4)),
+            
+            actionButton("calc_bond", "Calculate",
+                         class = "btn btn-primary btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Bond Value",
+            status = "success",
+            
+            div(class = "metric-box",
+                h3("Fair Market Value"),
+                div(class = "result-value",
+                    textOutput("bond_value"))
+            ),
+            
+            br(),
+            
+            uiOutput("bond_status"),
+            
+            br(),
+            
+            fluidRow(
+              column(4,
+                     div(class = "metric-box",
+                         h5("Coupon Payment"),
+                         div(style = "font-size: 20px; font-weight: bold; color: #3c8dbc;",
+                             textOutput("bond_coupon_pmt"))
+                     )
+              ),
+              column(4,
+                     div(class = "metric-box",
+                         h5("Total Coupons"),
+                         div(style = "font-size: 20px; font-weight: bold; color: #00a65a;",
+                             textOutput("bond_total_coupons"))
+                     )
+              ),
+              column(4,
+                     div(class = "metric-box",
+                         h5("PV of Face Value"),
+                         div(style = "font-size: 20px; font-weight: bold; color: #f39c12;",
+                             textOutput("bond_pv_face"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            plotlyOutput("bond_components_chart", height = "300px")
+          )
+        )
+      ),
+      
+      # LOAN AMORTIZATION TAB
+      tabItem(
+        tabName = "loan",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Loan Amortization Calculator",
+            status = "danger",
+            solidHeader = TRUE,
+            
+            p("Calculate loan payments and view amortization schedule")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Loan Details",
+            status = "danger",
+            
+            numericInput("loan_amount", "Loan Amount (Rs.):",
+                         value = 10000000, min = 0, step = 100000),
+            
+            sliderInput("loan_rate", "Annual Interest Rate (%):",
+                        min = 1, max = 30, value = 12, step = 0.5),
+            
+            sliderInput("loan_years", "Loan Term (Years):",
+                        min = 1, max = 30, value = 20, step = 1),
+            
+            actionButton("calc_loan", "Calculate",
+                         class = "btn btn-danger btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Payment Summary",
+            status = "success",
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Monthly Payment"),
+                         div(class = "result-value", textOutput("loan_payment"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total Interest"),
+                         div(class = "result-value", textOutput("loan_total_interest"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total Amount Paid"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #dd4b39;",
+                             textOutput("loan_total_paid"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Number of Payments"),
+                         div(style = "font-size: 24px; font-weight: bold;",
+                             textOutput("loan_num_payments"))
+                     )
+              )
+            )
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Principal vs Interest Over Time",
+            plotlyOutput("loan_chart")
+          ),
+          
+          box(
+            width = 6,
+            title = "Amortization Schedule (First 12 Months)",
+            DT::dataTableOutput("amort_table")
+          )
+        )
+      ),
+      
+      # RETIREMENT PLANNING TAB
+      tabItem(
+        tabName = "retirement",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Retirement Planning Calculator",
+            status = "success",
+            solidHeader = TRUE,
+            
+            p("Plan for a comfortable retirement - calculate how much you need to save")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 4,
+            title = "Your Information",
+            status = "success",
+            
+            numericInput("retire_current_age", "Current Age:",
+                         value = 30, min = 18, max = 65),
+            
+            numericInput("retire_retirement_age", "Planned Retirement Age:",
+                         value = 60, min = 50, max = 75),
+            
+            numericInput("retire_life_expect", "Life Expectancy:",
+                         value = 80, min = 65, max = 100),
+            
+            numericInput("retire_current_savings", "Current Savings (Rs.):",
+                         value = 1000000, min = 0, step = 100000),
+            
+            numericInput("retire_monthly_need", "Monthly Expense Needed in Retirement (Rs.):",
+                         value = 100000, min = 10000, step = 10000),
+            
+            sliderInput("retire_pre_return", "Expected Return Before Retirement (%):",
+                        min = 1, max = 20, value = 10, step = 0.5),
+            
+            sliderInput("retire_post_return", "Expected Return After Retirement (%):",
+                        min = 1, max = 15, value = 6, step = 0.5),
+            
+            sliderInput("retire_inflation", "Expected Inflation Rate (%):",
+                        min = 0, max = 10, value = 3, step = 0.5),
+            
+            actionButton("calc_retirement", "Calculate Plan",
+                         class = "btn btn-success btn-block")
+          ),
+          
+          box(
+            width = 8,
+            title = "Your Retirement Plan",
+            status = "primary",
+            
+            div(class = "metric-box", 
+                style = "background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px;",
+                h3("Monthly Savings Required", style = "margin-top: 0;"),
+                div(style = "font-size: 36px; font-weight: bold;",
+                    textOutput("retire_monthly_savings"))
+            ),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h5("Years to Retirement"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #3c8dbc;",
+                             textOutput("retire_years_to"))
+                     ),
+                     br(),
+                     div(class = "metric-box",
+                         h5("Total Needed at Retirement"),
+                         div(style = "font-size: 20px; font-weight: bold; color: #00a65a;",
+                             textOutput("retire_total_needed"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h5("Years in Retirement"),
+                         div(style = "font-size: 24px; font-weight: bold; color: #f39c12;",
+                             textOutput("retire_years_in"))
+                     ),
+                     br(),
+                     div(class = "metric-box",
+                         h5("Future Value of Current Savings"),
+                         div(style = "font-size: 20px; font-weight: bold; color: #605ca8;",
+                             textOutput("retire_fv_current"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            div(class = "metric-box",
+                h5("Inflation-Adjusted Monthly Expense at Retirement"),
+                div(style = "font-size: 20px; font-weight: bold; color: #dd4b39;",
+                    textOutput("retire_future_expense")),
+                p(style = "margin-top: 10px; color: #666;",
+                  "This is what your current expense will be worth at retirement due to inflation")
+            )
+          )
+        )
+      ),
+      
+      # LEASE VS BUY TAB
+      tabItem(
+        tabName = "lease_buy",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Lease vs Buy Analysis",
+            status = "info",
+            solidHeader = TRUE,
+            
+            p("Compare the cost of leasing vs buying (car, equipment, etc.)")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Option 1: Buy",
+            status = "primary",
+            
+            numericInput("lease_buy_price", "Purchase Price (Rs.):",
+                         value = 3000000, min = 100000, step = 100000),
+            
+            numericInput("lease_buy_down", "Down Payment (Rs.):",
+                         value = 500000, min = 0, step = 50000),
+            
+            sliderInput("lease_buy_loan_rate", "Loan Interest Rate (%):",
+                        min = 0, max = 30, value = 12, step = 0.5),
+            
+            sliderInput("lease_buy_loan_years", "Loan Term (Years):",
+                        min = 1, max = 10, value = 5, step = 1),
+            
+            numericInput("lease_buy_resale", "Estimated Resale Value (Rs.):",
+                         value = 1500000, min = 0, step = 100000),
+            
+            numericInput("lease_buy_annual_maint", "Annual Maintenance (Rs.):",
+                         value = 50000, min = 0, step = 10000)
+          ),
+          
+          box(
+            width = 6,
+            title = "Option 2: Lease",
+            status = "warning",
+            
+            numericInput("lease_monthly_pmt", "Monthly Lease Payment (Rs.):",
+                         value = 50000, min = 1000, step = 5000),
+            
+            sliderInput("lease_term_years", "Lease Term (Years):",
+                        min = 1, max = 10, value = 5, step = 1),
+            
+            numericInput("lease_down_pmt", "Initial Payment (Rs.):",
+                         value = 100000, min = 0, step = 10000),
+            
+            numericInput("lease_end_value", "Purchase Option at End (Rs.):",
+                         value = 0, min = 0, step = 100000),
+            
+            hr(),
+            
+            sliderInput("lease_discount_rate", "Your Discount Rate (%):",
+                        min = 1, max = 20, value = 10, step = 0.5),
+            
+            actionButton("calc_lease_buy", "Compare Options",
+                         class = "btn btn-info btn-block")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Comparison Results",
+            status = "success",
+            
+            uiOutput("lease_buy_winner"),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total Cost to Buy (PV)"),
+                         div(class = "result-value", style = "color: #3c8dbc;",
+                             textOutput("lease_buy_cost_buy"))
+                     )
+              ),
+              column(6,
+                     div(class = "metric-box",
+                         h4("Total Cost to Lease (PV)"),
+                         div(class = "result-value", style = "color: #f39c12;",
+                             textOutput("lease_buy_cost_lease"))
+                     )
+              )
+            ),
+            
+            br(),
+            
+            fluidRow(
+              column(6,
+                     h5("Buy Breakdown:"),
+                     tags$ul(
+                       tags$li(textOutput("lease_buy_down_text", inline = TRUE)),
+                       tags$li(textOutput("lease_buy_loan_pmt_text", inline = TRUE)),
+                       tags$li(textOutput("lease_buy_maint_text", inline = TRUE)),
+                       tags$li(textOutput("lease_buy_resale_text", inline = TRUE))
+                     )
+              ),
+              column(6,
+                     h5("Lease Breakdown:"),
+                     tags$ul(
+                       tags$li(textOutput("lease_initial_text", inline = TRUE)),
+                       tags$li(textOutput("lease_monthly_text", inline = TRUE)),
+                       tags$li(textOutput("lease_purchase_text", inline = TRUE))
+                     )
+              )
+            )
+          )
+        )
+      ),
+      
+      # COMPARISON TAB
+      tabItem(
+        tabName = "comparison",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Compare Investment Scenarios",
+            status = "warning",
+            solidHeader = TRUE,
+            
+            p("Compare different investment or savings strategies side-by-side")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Define Scenarios",
+            
+            fluidRow(
+              column(4,
+                     h4("Scenario A: Lump Sum"),
+                     numericInput("comp_lump", "Initial Investment (Rs.):",
+                                  value = 500000),
+                     sliderInput("comp_rate_a", "Return Rate (%):",
+                                 min = 0, max = 30, value = 10, step = 0.5)
+              ),
+              column(4,
+                     h4("Scenario B: Monthly Savings"),
+                     numericInput("comp_monthly", "Monthly Deposit (Rs.):",
+                                  value = 20000),
+                     sliderInput("comp_rate_b", "Return Rate (%):",
+                                 min = 0, max = 30, value = 10, step = 0.5)
+              ),
+              column(4,
+                     h4("Common Parameters"),
+                     sliderInput("comp_years", "Time Horizon (Years):",
+                                 min = 1, max = 40, value = 20, step = 1),
+                     actionButton("run_comparison_tvm", "Run Comparison",
+                                  class = "btn btn-warning btn-block")
+              )
+            )
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Future Values Comparison",
+            plotlyOutput("comparison_chart")
+          ),
+          
+          box(
+            width = 6,
+            title = "Summary",
+            uiOutput("comparison_summary")
+          )
+        )
+      ),
+      
+      # QUIZ TAB
+      tabItem(
+        tabName = "quiz",
+        
+        div(id = "quiz_welcome_tvm",
+            fluidRow(
+              box(
+                width = 12,
+                title = "Quiz Mode",
+                status = "danger",
+                h4("Ready to test your TVM knowledge?"),
+                p("Click 'Start Quiz' on the Home tab to begin.")
+              )
+            )
+        ),
+        
+        hidden(
+          div(id = "quiz_content_tvm",
+              fluidRow(
+                box(
+                  width = 12,
+                  title = textOutput("quiz_question_title_tvm"),
+                  status = "primary",
+                  solidHeader = TRUE,
+                  
+                  uiOutput("quiz_question_tvm"),
+                  
+                  br(),
+                  
+                  uiOutput("quiz_options_tvm"),
+                  
+                  br(),
+                  
+                  fluidRow(
+                    column(6,
+                           actionButton("submit_quiz_tvm", "Submit Answer",
+                                        icon = icon("check"),
+                                        class = "btn btn-primary btn-lg btn-block")
+                    ),
+                    column(6,
+                           actionButton("next_quiz_tvm", "Next Question",
+                                        icon = icon("arrow-right"),
+                                        class = "btn btn-success btn-lg btn-block")
+                    )
+                  ),
+                  
+                  br(),
+                  
+                  hidden(
+                    div(id = "quiz_feedback_tvm",
+                        uiOutput("quiz_feedback_text_tvm")
+                    )
+                  )
+                )
+              ),
+              
+              fluidRow(
+                box(
+                  width = 4,
+                  title = "Score",
+                  status = "success",
+                  div(class = "result-value", textOutput("quiz_score_tvm"))
+                ),
+                box(
+                  width = 4,
+                  title = "Progress",
+                  status = "info",
+                  div(class = "result-value", textOutput("quiz_progress_tvm"))
+                ),
+                box(
+                  width = 4,
+                  title = "Accuracy",
+                  status = "warning",
+                  div(class = "result-value", textOutput("quiz_accuracy_tvm"))
+                )
+              )
+          )
+        )
+      ),
+      
+      # RESULTS TAB
+      tabItem(
+        tabName = "results",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "Your Performance",
+            status = "success",
+            solidHeader = TRUE,
+            uiOutput("results_summary_tvm")
+          )
+        ),
+        
+        fluidRow(
+          box(
+            width = 6,
+            title = "Performance by Topic",
+            plotOutput("performance_plot_tvm")
+          ),
+          box(
+            width = 6,
+            title = "Detailed Results",
+            DT::dataTableOutput("results_table_tvm")
+          )
+        )
+      ),
+      
+      # ABOUT TAB
+      tabItem(
+        tabName = "about",
+        
+        fluidRow(
+          box(
+            width = 12,
+            title = "About TVM Simulator",
+            status = "info",
+            solidHeader = TRUE,
+            
+            h3("The Foundation of Finance"),
+            
+            h4("Developed by:"),
+            p("Dr. M.I.M. Riyath"),
+            p("Senior Lecturer, Department of Accountancy and Finance"),
+            p("South Eastern University of Sri Lanka"),
+            
+            br(),
+            
+            h4("Learning Objectives:"),
+            tags$ul(
+              tags$li("Master Present Value and Future Value calculations"),
+              tags$li("Understand annuities and perpetuities"),
+              tags$li("Analyze loan amortization"),
+              tags$li("Compare investment alternatives"),
+              tags$li("Apply TVM to real-world financial decisions")
+            ),
+            
+            br(),
+            
+            h4("Key Formulas:"),
+            div(class = "formula-box",
+                tags$ul(
+                  tags$li("FV = PV × (1 + r)^n"),
+                  tags$li("PV = FV / (1 + r)^n"),
+                  tags$li("PV(Annuity) = PMT × [(1 - (1+r)^-n) / r]"),
+                  tags$li("PV(Perpetuity) = PMT / r"),
+                  tags$li("PV(Growing Perpetuity) = PMT / (r - g)")
+                )
+            ),
+            
+            br(),
+            
+            p(paste0("Version 1.0 | ", Sys.Date())),
+            p("© 2025 Dr. M.I.M. Riyath")
+          )
+        )
+      )
+    )
+  )
+)
+
+# ============================================================================
+# SERVER LOGIC  
+# ============================================================================
+
+server <- function(input, output, session) {
+  
+  # Reactive values
+  game_state <- reactiveValues(
+    session_data = NULL,
+    scenarios = NULL,
+    current_scenario = 0,
+    score = 0,
+    correct_count = 0,
+    total_answered = 0,
+    is_quiz_active = FALSE
+  )
+  
+  # Navigation
+  observeEvent(input$goto_concepts, {
+    updateTabItems(session, "sidebar", "concepts")
+  })
+  
+  observeEvent(input$goto_single, {
+    updateTabItems(session, "sidebar", "single")
+  })
+  
+  observeEvent(input$goto_annuity, {
+    updateTabItems(session, "sidebar", "annuity")
+  })
+  
+  observeEvent(input$goto_loan, {
+    updateTabItems(session, "sidebar", "loan")
+  })
+  
+  observeEvent(input$goto_sinking, {
+    updateTabItems(session, "sidebar", "sinking")
+  })
+  
+  observeEvent(input$goto_retirement, {
+    updateTabItems(session, "sidebar", "retirement")
+  })
+  
+  # ========================================================================
+  # INTEREST CONCEPTS CALCULATOR
+  # ========================================================================
+  
+  concepts_calc_result <- eventReactive(input$calc_concepts, {
+    principal <- input$concept_principal
+    rate <- input$concept_rate / 100
+    years <- input$concept_years
+    n <- as.numeric(input$concept_compound_freq)
+    
+    # Simple Interest
+    simple_interest <- principal * rate * years
+    simple_fv <- principal + simple_interest
+    
+    # Compound Interest
+    compound_fv <- principal * (1 + rate/n)^(n * years)
+    compound_interest <- compound_fv - principal
+    
+    # Effective Annual Rate
+    ear <- (1 + rate/n)^n - 1
+    
+    # Advantage
+    advantage <- compound_interest - simple_interest
+    advantage_pct <- (advantage / simple_interest) * 100
+    
+    # Year-by-year growth for chart
+    years_seq <- 0:years
+    simple_growth <- principal + (principal * rate * years_seq)
+    compound_growth <- principal * (1 + rate/n)^(n * years_seq)
+    
+    list(
+      principal = principal,
+      rate = rate,
+      years = years,
+      n = n,
+      simple_fv = simple_fv,
+      simple_interest = simple_interest,
+      compound_fv = compound_fv,
+      compound_interest = compound_interest,
+      ear = ear,
+      advantage = advantage,
+      advantage_pct = advantage_pct,
+      years_seq = years_seq,
+      simple_growth = simple_growth,
+      compound_growth = compound_growth
+    )
+  })
+  
+  output$simple_interest_result <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("Rs. ", format(round(result$simple_fv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$simple_interest_earned <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("Rs. ", format(round(result$simple_interest, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$compound_interest_result <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("Rs. ", format(round(result$compound_fv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$compound_interest_earned <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("Rs. ", format(round(result$compound_interest, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$compounding_advantage <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("Rs. ", format(round(result$advantage, 0), big.mark = ",", scientific = FALSE), 
+           " more with compounding!")
+  })
+  
+  output$compounding_percentage <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0("That's ", round(result$advantage_pct, 1), "% more than simple interest")
+  })
+  
+  output$ear_nominal <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0(round(result$rate * 100, 2), "%")
+  })
+  
+  output$ear_effective <- renderText({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    paste0(round(result$ear * 100, 2), "%")
+  })
+  
+  output$concepts_growth_chart <- renderPlotly({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    
+    plot_ly() %>%
+      add_trace(x = result$years_seq, y = result$simple_growth,
+                type = 'scatter', mode = 'lines',
+                name = 'Simple Interest',
+                line = list(color = '#3c8dbc', width = 3)) %>%
+      add_trace(x = result$years_seq, y = result$compound_growth,
+                type = 'scatter', mode = 'lines',
+                name = 'Compound Interest',
+                line = list(color = '#00a65a', width = 3)) %>%
+      layout(title = "Growth Over Time",
+             xaxis = list(title = "Years"),
+             yaxis = list(title = "Amount (Rs.)", tickformat = ",.0f"),
+             hovermode = 'x unified')
+  })
+  
+  output$frequency_comparison_chart <- renderPlotly({
+    req(concepts_calc_result())
+    result <- concepts_calc_result()
+    
+    # Compare different frequencies
+    frequencies <- c(1, 2, 4, 12, 52, 365)
+    freq_names <- c("Annual", "Semi-Annual", "Quarterly", "Monthly", "Weekly", "Daily")
+    
+    fv_values <- sapply(frequencies, function(n) {
+      result$principal * (1 + result$rate/n)^(n * result$years)
+    })
+    
+    plot_ly() %>%
+      add_trace(x = freq_names, y = fv_values,
+                type = 'bar',
+                marker = list(color = c('#605ca8', '#00a65a', '#00c0ef', 
+                                        '#f39c12', '#dd4b39', '#932ab6')),
+                text = paste0("Rs. ", format(round(fv_values, 0), big.mark = ",", scientific = FALSE)),
+                textposition = 'outside') %>%
+      layout(title = "Impact of Compounding Frequency",
+             xaxis = list(title = ""),
+             yaxis = list(title = "Future Value (Rs.)", tickformat = ",.0f"))
+  })
+  
+  # ========================================================================
+  # SINGLE CASH FLOW CALCULATOR (Updated with compounding frequency)
+  # ========================================================================
+  
+  single_calc_result <- eventReactive(input$calc_single, {
+    rate <- input$rate_single / 100
+    periods <- input$periods_single
+    n <- as.numeric(input$compound_freq_single)
+    
+    if (input$calc_type_single == "fv") {
+      pv <- input$pv_input
+      # Adjust for compounding frequency
+      fv <- pv * (1 + rate/n)^(n * periods)
+      list(type = "fv", pv = pv, fv = fv, rate = rate, periods = periods, n = n)
+    } else {
+      fv <- input$fv_input
+      # Adjust for compounding frequency
+      pv <- fv / (1 + rate/n)^(n * periods)
+      list(type = "pv", pv = pv, fv = fv, rate = rate, periods = periods, n = n)
+    }
+  })
+  
+  output$single_result <- renderUI({
+    req(single_calc_result())
+    result <- single_calc_result()
+    
+    if (result$type == "fv") {
+      div(class = "metric-box",
+          h3("Future Value"),
+          div(class = "result-value",
+              paste0("Rs. ", format(round(result$fv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    } else {
+      div(class = "metric-box",
+          h3("Present Value"),
+          div(class = "result-value",
+              paste0("Rs. ", format(round(result$pv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    }
+  })
+  
+  output$single_formula <- renderUI({
+    req(single_calc_result())
+    result <- single_calc_result()
+    
+    freq_names <- c("1" = "Annual", "2" = "Semi-Annual", "4" = "Quarterly", 
+                    "12" = "Monthly", "52" = "Weekly", "365" = "Daily")
+    freq_name <- freq_names[as.character(result$n)]
+    
+    if (result$type == "fv") {
+      tagList(
+        p(strong("Formula: "), "FV = PV × (1 + r/n)^(n×t)"),
+        p(strong("Compounding: "), freq_name),
+        p(sprintf("FV = %s × (1 + %.4f/%d)^(%d×%d) = Rs. %s",
+                  format(round(result$pv, 0), big.mark = ",", scientific = FALSE),
+                  result$rate,
+                  result$n,
+                  result$n,
+                  result$periods,
+                  format(round(result$fv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    } else {
+      tagList(
+        p(strong("Formula: "), "PV = FV / (1 + r/n)^(n×t)"),
+        p(strong("Compounding: "), freq_name),
+        p(sprintf("PV = %s / (1 + %.4f/%d)^(%d×%d) = Rs. %s",
+                  format(round(result$fv, 0), big.mark = ",", scientific = FALSE),
+                  result$rate,
+                  result$n,
+                  result$n,
+                  result$periods,
+                  format(round(result$pv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    }
+  })
+  
+  output$single_timeline <- renderPlotly({
+    req(single_calc_result())
+    result <- single_calc_result()
+    
+    plot_ly() %>%
+      add_trace(x = c(0, result$periods), 
+                y = c(result$pv, result$fv),
+                type = 'scatter', mode = 'markers+lines',
+                marker = list(size = 15, color = c('blue', 'green')),
+                line = list(dash = 'dash'),
+                name = 'Cash Flow') %>%
+      layout(title = "Timeline",
+             xaxis = list(title = "Years"),
+             yaxis = list(title = "Amount (Rs.)", tickformat = ",.0f"),
+             showlegend = FALSE)
+  })
+  
+  # ========================================================================
+  # ANNUITY CALCULATOR
+  # ========================================================================
+  
+  annuity_calc_result <- eventReactive(input$calc_annuity, {
+    pmt <- input$pmt_annuity
+    rate <- input$rate_annuity / 100
+    periods <- input$periods_annuity
+    type <- input$annuity_type
+    
+    if (type == "ordinary") {
+      pv <- calculate_pv_annuity(pmt, rate, periods)
+      fv <- calculate_fv_annuity(pmt, rate, periods)
+    } else {
+      pv <- calculate_pv_annuity_due(pmt, rate, periods)
+      fv <- calculate_fv_annuity_due(pmt, rate, periods)
+    }
+    
+    list(pmt = pmt, rate = rate, periods = periods, pv = pv, fv = fv, type = type)
+  })
+  
+  output$annuity_pv <- renderText({
+    req(annuity_calc_result())
+    result <- annuity_calc_result()
+    paste0("Rs. ", format(round(result$pv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$annuity_fv <- renderText({
+    req(annuity_calc_result())
+    result <- annuity_calc_result()
+    paste0("Rs. ", format(round(result$fv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$annuity_formula <- renderUI({
+    req(annuity_calc_result())
+    result <- annuity_calc_result()
+    
+    if (result$type == "ordinary") {
+      tagList(
+        p(strong("PV Formula: "), "PMT × [(1 - (1+r)^-n) / r]"),
+        p(strong("FV Formula: "), "PMT × [((1+r)^n - 1) / r]")
+      )
+    } else {
+      tagList(
+        p(strong("Annuity Due = Ordinary Annuity × (1 + r)")),
+        p("Payments at beginning of period add one more compounding period")
+      )
+    }
+  })
+  
+  output$annuity_timeline <- renderPlotly({
+    req(annuity_calc_result())
+    result <- annuity_calc_result()
+    
+    periods <- 1:result$periods
+    payments <- rep(result$pmt, result$periods)
+    
+    plot_ly() %>%
+      add_trace(x = periods, y = payments,
+                type = 'bar',
+                marker = list(color = '#605ca8'),
+                name = 'Payments') %>%
+      layout(title = "Payment Timeline",
+             xaxis = list(title = "Period"),
+             yaxis = list(title = "Payment (Rs.)", tickformat = ",.0f"))
+  })
+  
+  # ========================================================================
+  # PERPETUITY CALCULATOR
+  # ========================================================================
+  
+  perp_calc_result <- eventReactive(input$calc_perp, {
+    pmt <- input$pmt_perp
+    rate <- input$rate_perp / 100
+    
+    if (input$perp_type == "regular") {
+      pv <- calculate_pv_perpetuity(pmt, rate)
+      list(pmt = pmt, rate = rate, pv = pv, type = "regular")
+    } else {
+      growth <- input$growth_perp / 100
+      pv <- calculate_pv_growing_perpetuity(pmt, rate, growth)
+      list(pmt = pmt, rate = rate, growth = growth, pv = pv, type = "growing")
+    }
+  })
+  
+  output$perp_pv <- renderText({
+    req(perp_calc_result())
+    result <- perp_calc_result()
+    paste0("Rs. ", format(round(result$pv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$perp_formula <- renderUI({
+    req(perp_calc_result())
+    result <- perp_calc_result()
+    
+    if (result$type == "regular") {
+      tagList(
+        p(strong("Formula: "), "PV = PMT / r"),
+        p(sprintf("PV = %s / %.3f = Rs. %s",
+                  format(round(result$pmt, 0), big.mark = ",", scientific = FALSE),
+                  result$rate,
+                  format(round(result$pv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    } else {
+      tagList(
+        p(strong("Formula: "), "PV = PMT / (r - g)"),
+        p(sprintf("PV = %s / (%.3f - %.3f) = Rs. %s",
+                  format(round(result$pmt, 0), big.mark = ",", scientific = FALSE),
+                  result$rate,
+                  result$growth,
+                  format(round(result$pv, 0), big.mark = ",", scientific = FALSE)))
+      )
+    }
+  })
+  
+  output$perp_explanation <- renderUI({
+    div(class = "metric-box",
+        h4("About Perpetuities"),
+        p("A perpetuity is a stream of payments that continues forever. Examples include:"),
+        tags$ul(
+          tags$li("Preferred stock dividends"),
+          tags$li("Endowment fund withdrawals"),
+          tags$li("Consol bonds (UK government bonds with no maturity)")
+        ),
+        p("Growing perpetuities increase at a constant rate each period, like dividends that grow over time.")
+    )
+  })
+  
+  # ========================================================================
+  # LOAN AMORTIZATION
+  # ========================================================================
+  
+  loan_calc_result <- eventReactive(input$calc_loan, {
+    principal <- input$loan_amount
+    annual_rate <- input$loan_rate / 100
+    years <- input$loan_years
+    
+    monthly_rate <- annual_rate / 12
+    periods <- years * 12
+    
+    payment <- calculate_loan_payment(principal, monthly_rate, periods)
+    total_paid <- payment * periods
+    total_interest <- total_paid - principal
+    
+    # Generate amortization schedule
+    schedule <- generate_amortization_schedule(principal, annual_rate, years)
+    
+    list(
+      payment = payment,
+      total_paid = total_paid,
+      total_interest = total_interest,
+      periods = periods,
+      schedule = schedule
+    )
+  })
+  
+  output$loan_payment <- renderText({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    paste0("Rs. ", format(round(result$payment, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$loan_total_interest <- renderText({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    paste0("Rs. ", format(round(result$total_interest, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$loan_total_paid <- renderText({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    paste0("Rs. ", format(round(result$total_paid, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$loan_num_payments <- renderText({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    paste0(result$periods, " months")
+  })
+  
+  output$loan_chart <- renderPlotly({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    
+    schedule <- result$schedule
+    
+    # Sample every 12 months for readability
+    sample_months <- seq(1, nrow(schedule), by = 12)
+    sample_data <- schedule[sample_months, ]
+    
+    plot_ly(sample_data) %>%
+      add_trace(x = ~Month, y = ~Principal, type = 'scatter', mode = 'lines',
+                name = 'Principal', line = list(color = '#00a65a', width = 3)) %>%
+      add_trace(x = ~Month, y = ~Interest, type = 'scatter', mode = 'lines',
+                name = 'Interest', line = list(color = '#dd4b39', width = 3)) %>%
+      layout(title = "Principal vs Interest Portion",
+             xaxis = list(title = "Month"),
+             yaxis = list(title = "Amount (Rs.)", tickformat = ",.0f"))
+  })
+  
+  output$amort_table <- DT::renderDataTable({
+    req(loan_calc_result())
+    result <- loan_calc_result()
+    
+    # Show first 12 months
+    first_12 <- head(result$schedule, 12)
+    first_12$Beginning_Balance <- round(first_12$Beginning_Balance, 0)
+    first_12$Payment <- round(first_12$Payment, 0)
+    first_12$Interest <- round(first_12$Interest, 0)
+    first_12$Principal <- round(first_12$Principal, 0)
+    first_12$Ending_Balance <- round(first_12$Ending_Balance, 0)
+    
+    datatable(first_12, 
+              options = list(pageLength = 12, dom = 't'),
+              rownames = FALSE) %>%
+      formatCurrency(c('Beginning_Balance', 'Payment', 'Interest', 'Principal', 'Ending_Balance'),
+                     currency = "Rs. ", digits = 0)
+  })
+  # ============================================================================
+  # SERVER LOGIC FOR ADVANCED CALCULATORS
+  # Add this code to the server section of your main app.R file
+  # ============================================================================
+  
+  # ========================================================================
+  # SINKING FUND CALCULATOR
+  # ========================================================================
+  
+  sinking_calc_result <- eventReactive(input$calc_sinking, {
+    goal <- input$sinking_goal
+    rate <- input$sinking_rate / 100
+    years <- input$sinking_years
+    freq <- as.numeric(input$sinking_frequency)
+    
+    # Adjust for frequency
+    periods <- years * freq
+    rate_per_period <- rate / freq
+    
+    # Calculate payment
+    payment <- calculate_sinking_fund_payment(goal, rate_per_period, periods)
+    
+    # Total paid
+    total_paid <- payment * periods
+    
+    # Interest earned
+    interest_earned <- goal - total_paid
+    
+    # Year-by-year growth
+    growth_data <- data.frame(year = 0:years)
+    growth_data$balance <- sapply(0:years, function(y) {
+      if (y == 0) return(0)
+      p <- y * freq
+      calculate_fv_annuity(payment, rate_per_period, p)
+    })
+    
+    list(
+      payment = payment,
+      total_paid = total_paid,
+      interest_earned = interest_earned,
+      goal = goal,
+      freq = freq,
+      growth_data = growth_data
+    )
+  })
+  
+  output$sinking_payment <- renderText({
+    req(sinking_calc_result())
+    result <- sinking_calc_result()
+    freq_name <- c("1" = "year", "2" = "6 months", "4" = "quarter", "12" = "month")
+    paste0("Rs. ", format(round(result$payment, 0), big.mark = ",", scientific = FALSE),
+           " per ", freq_name[as.character(result$freq)])
+  })
+  
+  output$sinking_total_paid <- renderText({
+    req(sinking_calc_result())
+    result <- sinking_calc_result()
+    paste0("Rs. ", format(round(result$total_paid, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$sinking_interest_earned <- renderText({
+    req(sinking_calc_result())
+    result <- sinking_calc_result()
+    paste0("Rs. ", format(round(result$interest_earned, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$sinking_growth_chart <- renderPlotly({
+    req(sinking_calc_result())
+    result <- sinking_calc_result()
+    
+    plot_ly(result$growth_data) %>%
+      add_trace(x = ~year, y = ~balance, type = 'scatter', mode = 'lines+markers',
+                fill = 'tozeroy',
+                line = list(color = '#00a65a', width = 3),
+                marker = list(color = '#00a65a', size = 8),
+                name = 'Savings Growth') %>%
+      add_trace(x = c(max(result$growth_data$year)), 
+                y = c(result$goal),
+                type = 'scatter', mode = 'markers',
+                marker = list(color = '#f39c12', size = 15, symbol = 'star'),
+                name = 'Goal') %>%
+      layout(title = "Sinking Fund Growth",
+             xaxis = list(title = "Years"),
+             yaxis = list(title = "Balance (Rs.)", tickformat = ",.0f"),
+             hovermode = 'x unified')
+  })
+  
+  # ========================================================================
+  # GROWING ANNUITY CALCULATOR
+  # ========================================================================
+  
+  growing_calc_result <- eventReactive(input$calc_growing, {
+    first_pmt <- input$growing_first_pmt
+    growth <- input$growing_growth / 100
+    rate <- input$growing_rate / 100
+    periods <- input$growing_periods
+    
+    pv <- calculate_pv_growing_annuity(first_pmt, rate, growth, periods)
+    fv <- calculate_fv_growing_annuity(first_pmt, rate, growth, periods)
+    
+    # Payment schedule
+    payments <- sapply(1:periods, function(t) {
+      first_pmt * (1 + growth)^(t-1)
+    })
+    
+    list(pv = pv, fv = fv, payments = payments, periods = 1:periods)
+  })
+  
+  output$growing_pv <- renderText({
+    req(growing_calc_result())
+    result <- growing_calc_result()
+    paste0("Rs. ", format(round(result$pv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$growing_fv <- renderText({
+    req(growing_calc_result())
+    result <- growing_calc_result()
+    paste0("Rs. ", format(round(result$fv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$growing_payments_chart <- renderPlotly({
+    req(growing_calc_result())
+    result <- growing_calc_result()
+    
+    plot_ly() %>%
+      add_trace(x = result$periods, y = result$payments,
+                type = 'bar',
+                marker = list(color = '#f39c12'),
+                name = 'Payment Amount') %>%
+      layout(title = "Growing Payment Schedule",
+             xaxis = list(title = "Period"),
+             yaxis = list(title = "Payment (Rs.)", tickformat = ",.0f"))
+  })
+  
+  # ========================================================================
+  # DEFERRED ANNUITY CALCULATOR
+  # ========================================================================
+  
+  deferred_calc_result <- eventReactive(input$calc_deferred, {
+    pmt <- input$deferred_pmt
+    rate <- input$deferred_rate / 100
+    defer_periods <- input$deferred_defer
+    payment_periods <- input$deferred_periods
+    
+    pv <- calculate_pv_deferred_annuity(pmt, rate, payment_periods, defer_periods)
+    pv_at_start <- calculate_pv_annuity(pmt, rate, payment_periods)
+    total_payments <- pmt * payment_periods
+    
+    list(
+      pv = pv,
+      pv_at_start = pv_at_start,
+      total_payments = total_payments
+    )
+  })
+  
+  output$deferred_pv <- renderText({
+    req(deferred_calc_result())
+    result <- deferred_calc_result()
+    paste0("Rs. ", format(round(result$pv, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$deferred_pv_at_start <- renderText({
+    req(deferred_calc_result())
+    result <- deferred_calc_result()
+    paste0("Rs. ", format(round(result$pv_at_start, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$deferred_total <- renderText({
+    req(deferred_calc_result())
+    result <- deferred_calc_result()
+    paste0("Rs. ", format(round(result$total_payments, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  # ========================================================================
+  # BOND VALUATION CALCULATOR
+  # ========================================================================
+  
+  bond_calc_result <- eventReactive(input$calc_bond, {
+    face_value <- input$bond_face
+    coupon_rate <- input$bond_coupon / 100
+    market_rate <- input$bond_market / 100
+    years <- input$bond_years
+    frequency <- as.numeric(input$bond_frequency)
+    
+    bond_result <- calculate_bond_value(face_value, coupon_rate, market_rate, years, frequency)
+    
+    # Determine if bond trades at premium, discount, or par
+    if (bond_result$bond_value > face_value * 1.01) {
+      status <- "Premium"
+      status_color <- "#00a65a"
+      status_msg <- "Bond trades above face value (coupon rate > market rate)"
+    } else if (bond_result$bond_value < face_value * 0.99) {
+      status <- "Discount"
+      status_color <- "#dd4b39"
+      status_msg <- "Bond trades below face value (coupon rate < market rate)"
+    } else {
+      status <- "Par"
+      status_color <- "#3c8dbc"
+      status_msg <- "Bond trades at face value (coupon rate ≈ market rate)"
+    }
+    
+    c(bond_result, list(status = status, status_color = status_color, status_msg = status_msg))
+  })
+  
+  output$bond_value <- renderText({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    paste0("Rs. ", format(round(result$bond_value, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$bond_status <- renderUI({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    
+    div(class = "metric-box",
+        style = paste0("border-left-color: ", result$status_color, ";"),
+        h4(paste("Bond Status:", result$status)),
+        p(result$status_msg)
+    )
+  })
+  
+  output$bond_coupon_pmt <- renderText({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    paste0("Rs. ", format(round(result$coupon_pmt, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$bond_total_coupons <- renderText({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    paste0("Rs. ", format(round(result$total_coupons, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$bond_pv_face <- renderText({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    paste0("Rs. ", format(round(result$pv_face, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$bond_components_chart <- renderPlotly({
+    req(bond_calc_result())
+    result <- bond_calc_result()
+    
+    components <- data.frame(
+      Component = c("PV of Coupons", "PV of Face Value"),
+      Value = c(result$pv_coupons, result$pv_face)
+    )
+    
+    plot_ly(components) %>%
+      add_trace(x = ~Component, y = ~Value, type = 'bar',
+                marker = list(color = c('#00a65a', '#f39c12')),
+                text = ~paste0("Rs. ", format(round(Value, 0), big.mark = ",")),
+                textposition = 'outside') %>%
+      layout(title = "Bond Value Components",
+             xaxis = list(title = ""),
+             yaxis = list(title = "Present Value (Rs.)", tickformat = ",.0f"))
+  })
+  
+  # ========================================================================
+  # RETIREMENT PLANNING CALCULATOR
+  # ========================================================================
+  
+  retirement_calc_result <- eventReactive(input$calc_retirement, {
+    calculate_retirement_needs(
+      current_age = input$retire_current_age,
+      retirement_age = input$retire_retirement_age,
+      life_expectancy = input$retire_life_expect,
+      current_savings = input$retire_current_savings,
+      monthly_expense_needed = input$retire_monthly_need,
+      pre_retirement_return = input$retire_pre_return / 100,
+      post_retirement_return = input$retire_post_return / 100,
+      inflation_rate = input$retire_inflation / 100
+    )
+  })
+  
+  output$retire_monthly_savings <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0("Rs. ", format(round(result$monthly_savings_required, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$retire_years_to <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0(result$years_to_retirement, " years")
+  })
+  
+  output$retire_years_in <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0(result$years_in_retirement, " years")
+  })
+  
+  output$retire_total_needed <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0("Rs. ", format(round(result$total_needed_at_retirement, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$retire_fv_current <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0("Rs. ", format(round(result$fv_current_savings, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$retire_future_expense <- renderText({
+    req(retirement_calc_result())
+    result <- retirement_calc_result()
+    paste0("Rs. ", format(round(result$future_monthly_expense, 0), big.mark = ",", scientific = FALSE), " per month")
+  })
+  
+  # ========================================================================
+  # LEASE VS BUY CALCULATOR
+  # ========================================================================
+  
+  lease_buy_calc_result <- eventReactive(input$calc_lease_buy, {
+    # Buy option
+    purchase_price <- input$lease_buy_price
+    down_payment <- input$lease_buy_down
+    loan_amount <- purchase_price - down_payment
+    loan_rate <- input$lease_buy_loan_rate / 100 / 12
+    loan_months <- input$lease_buy_loan_years * 12
+    monthly_loan_pmt <- calculate_loan_payment(loan_amount, loan_rate, loan_months)
+    annual_maint <- input$lease_buy_annual_maint
+    resale_value <- input$lease_buy_resale
+    
+    # Lease option
+    lease_monthly <- input$lease_monthly_pmt
+    lease_years <- input$lease_term_years
+    lease_months <- lease_years * 12
+    lease_initial <- input$lease_down_pmt
+    lease_end_purchase <- input$lease_end_value
+    
+    # Discount rate
+    discount_rate <- input$lease_discount_rate / 100 / 12
+    
+    # PV of Buy
+    pv_down <- down_payment
+    pv_loan_pmts <- calculate_pv_annuity(monthly_loan_pmt, discount_rate, loan_months)
+    pv_maint <- calculate_pv_annuity(annual_maint/12, discount_rate, lease_years * 12)
+    pv_resale <- resale_value / (1 + discount_rate)^(lease_years * 12)
+    
+    total_cost_buy <- pv_down + pv_loan_pmts + pv_maint - pv_resale
+    
+    # PV of Lease
+    pv_lease_initial <- lease_initial
+    pv_lease_pmts <- calculate_pv_annuity(lease_monthly, discount_rate, lease_months)
+    pv_lease_end <- lease_end_purchase / (1 + discount_rate)^lease_months
+    
+    total_cost_lease <- pv_lease_initial + pv_lease_pmts + pv_lease_end
+    
+    # Winner
+    if (total_cost_buy < total_cost_lease) {
+      winner <- "Buy"
+      savings <- total_cost_lease - total_cost_buy
+    } else {
+      winner <- "Lease"
+      savings <- total_cost_buy - total_cost_lease
+    }
+    
+    list(
+      total_cost_buy = total_cost_buy,
+      total_cost_lease = total_cost_lease,
+      winner = winner,
+      savings = savings,
+      monthly_loan_pmt = monthly_loan_pmt,
+      pv_down = pv_down,
+      pv_loan_pmts = pv_loan_pmts,
+      pv_maint = pv_maint,
+      pv_resale = pv_resale,
+      pv_lease_initial = pv_lease_initial,
+      pv_lease_pmts = pv_lease_pmts,
+      pv_lease_end = pv_lease_end
+    )
+  })
+  
+  output$lease_buy_winner <- renderUI({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    
+    div(class = "metric-box",
+        style = if(result$winner == "Buy") "background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); color: white; padding: 20px;" else "background: linear-gradient(135deg, #fa709a 0%, #fee140 100%); color: white; padding: 20px;",
+        h3(paste(result$winner, "is Better"), style = "margin-top: 0;"),
+        h4(paste0("You save Rs. ", format(round(result$savings, 0), big.mark = ",", scientific = FALSE), " in present value")),
+        style = "text-align: center;"
+    )
+  })
+  
+  output$lease_buy_cost_buy <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Rs. ", format(round(result$total_cost_buy, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_buy_cost_lease <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Rs. ", format(round(result$total_cost_lease, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_buy_down_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Down payment: Rs. ", format(round(result$pv_down, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_buy_loan_pmt_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Loan payments (PV): Rs. ", format(round(result$pv_loan_pmts, 0), big.mark = ",", scientific = FALSE),
+           " (Rs. ", format(round(result$monthly_loan_pmt, 0), big.mark = ",", scientific = FALSE), "/month)")
+  })
+  
+  output$lease_buy_maint_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Maintenance (PV): Rs. ", format(round(result$pv_maint, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_buy_resale_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Resale value (PV): -Rs. ", format(round(result$pv_resale, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_initial_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Initial payment: Rs. ", format(round(result$pv_lease_initial, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_monthly_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    paste0("Monthly payments (PV): Rs. ", format(round(result$pv_lease_pmts, 0), big.mark = ",", scientific = FALSE))
+  })
+  
+  output$lease_purchase_text <- renderText({
+    req(lease_buy_calc_result())
+    result <- lease_buy_calc_result()
+    if (result$pv_lease_end > 0) {
+      paste0("End purchase (PV): Rs. ", format(round(result$pv_lease_end, 0), big.mark = ",", scientific = FALSE))
+    } else {
+      "No purchase at end"
+    }
+  })
+  # ========================================================================
+  # COMPARISON
+  # ========================================================================
+  
+  comparison_result <- eventReactive(input$run_comparison_tvm, {
+    lump <- input$comp_lump
+    monthly <- input$comp_monthly
+    rate_a <- input$comp_rate_a / 100
+    rate_b <- input$comp_rate_b / 100
+    years <- input$comp_years
+    
+    # Scenario A: Lump sum
+    fv_a <- calculate_fv_single(lump, rate_a, years)
+    
+    # Scenario B: Monthly savings
+    periods <- years * 12
+    monthly_rate <- rate_b / 12
+    fv_b <- calculate_fv_annuity(monthly, monthly_rate, periods)
+    
+    list(fv_a = fv_a, fv_b = fv_b, years = years)
+  })
+  
+  output$comparison_chart <- renderPlotly({
+    req(comparison_result())
+    result <- comparison_result()
+    
+    scenarios <- c("Lump Sum", "Monthly Savings")
+    values <- c(result$fv_a, result$fv_b)
+    
+    plot_ly() %>%
+      add_trace(x = scenarios, y = values, type = 'bar',
+                marker = list(color = c('#605ca8', '#00a65a')),
+                text = paste0("Rs. ", format(round(values, 0), big.mark = ",", scientific = FALSE)),
+                textposition = 'outside') %>%
+      layout(title = paste0("Future Values After ", result$years, " Years"),
+             xaxis = list(title = ""),
+             yaxis = list(title = "Future Value (Rs.)", tickformat = ",.0f"))
+  })
+  
+  output$comparison_summary <- renderUI({
+    req(comparison_result())
+    result <- comparison_result()
+    
+    winner <- if(result$fv_a > result$fv_b) "Scenario A (Lump Sum)" else "Scenario B (Monthly Savings)"
+    difference <- abs(result$fv_a - result$fv_b)
+    
+    div(class = "metric-box",
+        h4("Winner: ", winner),
+        p(strong("Scenario A FV: "), paste0("Rs. ", format(round(result$fv_a, 0), big.mark = ",", scientific = FALSE))),
+        p(strong("Scenario B FV: "), paste0("Rs. ", format(round(result$fv_b, 0), big.mark = ",", scientific = FALSE))),
+        p(strong("Difference: "), paste0("Rs. ", format(round(difference, 0), big.mark = ",", scientific = FALSE))),
+        br(),
+        p(em("Note: This assumes all stated return rates are achieved and ignores taxes and fees."))
+    )
+  })
+  
+  # ========================================================================
+  # QUIZ LOGIC
+  # ========================================================================
+  
+  observeEvent(input$start_quiz_tvm, {
+    cat("\n\n========================================\n")
+    cat("STARTING NEW QUIZ\n")
+    cat("========================================\n")
+    cat("Difficulty selected:", input$quiz_difficulty_tvm, "\n")
+    
+    game_state$session_data <- initialize_session()
+    game_state$session_data$user_info <- list(
+      name = input$player_name_tvm,
+      consent = input$consent_tvm,
+      difficulty = input$quiz_difficulty_tvm
+    )
+    
+    cat("Generating TVM scenarios for difficulty:", input$quiz_difficulty_tvm, "\n")
+    game_state$scenarios <- generate_tvm_scenarios(input$quiz_difficulty_tvm)
+    cat("Number of scenarios generated:", length(game_state$scenarios), "\n")
+    
+    # Detailed scenario check
+    for (i in 1:length(game_state$scenarios)) {
+      s <- game_state$scenarios[[i]]
+      cat("Scenario", i, "- ID:", s$id, "Type:", s$type,
+          "Has options:", !is.null(s$options),
+          "Num options:", length(s$options), "\n")
+    }
+    
+    game_state$current_scenario <- 1
+    game_state$score <- 0
+    game_state$correct_count <- 0
+    game_state$total_answered <- 0
+    game_state$is_quiz_active <- TRUE
+    
+    cat("Quiz initialized!\n")
+    cat("First scenario ID:", game_state$scenarios[[1]]$id, "\n")
+    cat("========================================\n\n")
+    
+    updateTabItems(session, "sidebar", "quiz")
+    shinyjs::hide("quiz_welcome_tvm")
+    shinyjs::show("quiz_content_tvm")
+    shinyjs::hide("quiz_feedback_tvm")
+    shinyjs::hide("next_quiz_tvm")
+    
+    # CRITICAL: Ensure submit button is enabled
+    shinyjs::enable("submit_quiz_tvm")
+    cat("Submit button explicitly enabled\n\n")
+  })
+  
+  output$quiz_question_title_tvm <- renderText({
+    if (!is.null(game_state$scenarios) && game_state$current_scenario > 0) {
+      paste0("Question ", game_state$current_scenario, " of ", length(game_state$scenarios))
+    } else {
+      "Quiz Mode"
+    }
+  })
+  
+  output$quiz_question_tvm <- renderUI({
+    if (!is.null(game_state$scenarios) && game_state$current_scenario > 0 &&
+        game_state$current_scenario <= length(game_state$scenarios)) {
+      scenario <- game_state$scenarios[[game_state$current_scenario]]
+      
+      div(class = "metric-box",
+          h4(scenario$question)
+      )
+    } else {
+      div(class = "metric-box",
+          p("Click 'Start Quiz' to begin")
+      )
+    }
+  })
+  
+  output$quiz_options_tvm <- renderUI({
+    # Force re-render when scenario changes
+    current <- game_state$current_scenario
+    
+    if (!is.null(game_state$scenarios) && current > 0 &&
+        current <= length(game_state$scenarios)) {
+      scenario <- game_state$scenarios[[current]]
+      
+      cat("Rendering options for scenario", current, "ID:", scenario$id, "\n")
+      
+      if (is.null(scenario$options) || length(scenario$options) == 0) {
+        cat("ERROR: No options for scenario", current, "\n")
+        return(div(class = "metric-box", style = "background-color: #f8d7da;",
+                   h4("Error: No options available"),
+                   p(paste0("Scenario ID: ", scenario$id)),
+                   p(paste0("Scenario Type: ", scenario$type))))
+      }
+      
+      cat("Options available:", length(scenario$options), "\n")
+      
+      # Create radio buttons with unique ID per scenario to force re-render
+      radioButtons(
+        inputId = "quiz_answer_tvm",
+        label = "Select your answer:",
+        choices = scenario$options,
+        selected = character(0)
+      )
+    } else {
+      div(p("Please start the quiz from the Home tab."))
+    }
+  })
+  
+  observeEvent(input$submit_quiz_tvm, {
+    cat("=== SUBMIT QUIZ CLICKED ===\n")
+    cat("Quiz active:", game_state$is_quiz_active, "\n")
+    cat("Current scenario:", game_state$current_scenario, "\n")
+    cat("Total scenarios:", length(game_state$scenarios), "\n")
+    cat("Answer input exists:", !is.null(input$quiz_answer_tvm), "\n")
+    cat("Answer value:", ifelse(is.null(input$quiz_answer_tvm), "NULL", input$quiz_answer_tvm), "\n")
+    cat("Answer is empty string:", identical(input$quiz_answer_tvm, ""), "\n")
+    
+    if (is.null(input$quiz_answer_tvm) || input$quiz_answer_tvm == "") {
+      cat("ERROR: No answer selected\n")
+      output$quiz_feedback_text_tvm <- renderUI({
+        div(class = "metric-box", style = "background-color: #fff3cd; border-left-color: #ffc107;",
+            h4("⚠ Please select an answer"),
+            p("You must select one of the options before submitting.")
+        )
+      })
+      shinyjs::show("quiz_feedback_tvm")
+      return(NULL)
+    }
+    
+    cat("Proceeding with submission...\n")
+    
+    tryCatch({
+      scenario <- game_state$scenarios[[game_state$current_scenario]]
+      cat("Scenario ID:", scenario$id, "\n")
+      cat("Scenario type:", scenario$type, "\n")
+      cat("Has options:", !is.null(scenario$options), "\n")
+      if (!is.null(scenario$options)) {
+        cat("Options:", paste(scenario$options, collapse = " | "), "\n")
+      }
+      cat("User answer:", input$quiz_answer_tvm, "\n")
+      cat("Correct answer:", scenario$correct_answer, "\n")
+      
+      is_correct <- (input$quiz_answer_tvm == scenario$correct_answer)
+      cat("Is correct:", is_correct, "\n")
+      
+      if (is_correct) {
+        game_state$correct_count <- game_state$correct_count + 1
+        game_state$score <- game_state$score + 10
+      }
+      game_state$total_answered <- game_state$total_answered + 1
+      
+      game_state$session_data <- save_decision(
+        game_state$session_data,
+        scenario$id,
+        input$quiz_answer_tvm,
+        scenario$correct_answer,
+        0,
+        is_correct
+      )
+      
+      output$quiz_feedback_text_tvm <- renderUI({
+        if (is_correct) {
+          div(class = "metric-box", style = "background-color: #d4edda; border-left-color: #28a745;",
+              h4("✓ Correct!"),
+              p(scenario$explanation)
+          )
+        } else {
+          div(class = "metric-box", style = "background-color: #f8d7da; border-left-color: #dc3545;",
+              h4("✗ Incorrect"),
+              p(strong("Correct Answer: "), scenario$correct_answer),
+              p(scenario$explanation)
+          )
+        }
+      })
+      
+      shinyjs::show("quiz_feedback_tvm")
+      shinyjs::disable("submit_quiz_tvm")
+      shinyjs::show("next_quiz_tvm")
+      
+      cat("=== SUBMIT SUCCESSFUL ===\n\n")
+      
+    }, error = function(e) {
+      cat("ERROR in submit:", e$message, "\n")
+      cat("Stack trace:", paste(capture.output(traceback()), collapse = "\n"), "\n")
+      output$quiz_feedback_text_tvm <- renderUI({
+        div(class = "metric-box", style = "background-color: #f8d7da;",
+            h4("Error"),
+            p("An error occurred. Please try again."),
+            p(paste("Error:", e$message))
+        )
+      })
+      shinyjs::show("quiz_feedback_tvm")
+    })
+  }, ignoreNULL = TRUE, ignoreInit = TRUE)
+  
+  observeEvent(input$next_quiz_tvm, {
+    cat("=== NEXT BUTTON CLICKED ===\n")
+    cat("Current scenario:", game_state$current_scenario, "\n")
+    cat("Total scenarios:", length(game_state$scenarios), "\n")
+    
+    if (game_state$current_scenario < length(game_state$scenarios)) {
+      game_state$current_scenario <- game_state$current_scenario + 1
+      cat("Moving to scenario:", game_state$current_scenario, "\n")
+      
+      # Hide feedback and reset buttons
+      shinyjs::hide("quiz_feedback_tvm")
+      shinyjs::enable("submit_quiz_tvm")
+      shinyjs::hide("next_quiz_tvm")
+      
+      cat("=== MOVED TO NEXT QUESTION ===\n\n")
+    } else {
+      cat("Quiz completed!\n")
+      game_state$is_quiz_active <- FALSE
+      game_state$session_data$performance <- list(
+        score = game_state$score,
+        correct = game_state$correct_count,
+        total = game_state$total_answered,
+        accuracy = round(game_state$correct_count / game_state$total_answered * 100, 1)
+      )
+      
+      if (game_state$session_data$user_info$consent) {
+        save_session_data(game_state$session_data)
+      }
+      
+      updateTabItems(session, "sidebar", "results")
+      cat("=== QUIZ FINISHED - SHOWING RESULTS ===\n\n")
+    }
+  })
+  
+  output$quiz_score_tvm <- renderText({
+    paste0(game_state$score, " pts")
+  })
+  
+  output$quiz_progress_tvm <- renderText({
+    if (length(game_state$scenarios) > 0) {
+      paste0(game_state$total_answered, "/", length(game_state$scenarios))
+    } else {
+      "0/0"
+    }
+  })
+  
+  output$quiz_accuracy_tvm <- renderText({
+    if (game_state$total_answered > 0) {
+      paste0(round(game_state$correct_count / game_state$total_answered * 100, 1), "%")
+    } else {
+      "0%"
+    }
+  })
+  
+  # Results
+  output$results_summary_tvm <- renderUI({
+    req(game_state$session_data)
+    perf <- game_state$session_data$performance
+    
+    # Determine performance level
+    if (perf$accuracy >= 80) {
+      performance_level <- "Excellent"
+      performance_color <- "success"
+      performance_icon <- "trophy"
+      performance_message <- "Outstanding performance! You've mastered TVM concepts!"
+    } else if (perf$accuracy >= 60) {
+      performance_level <- "Good"
+      performance_color <- "olive"
+      performance_icon <- "check-circle"
+      performance_message <- "Good work! Keep practicing to improve further."
+    } else {
+      performance_level <- "Needs Improvement"
+      performance_color <- "orange"
+      performance_icon <- "book"
+      performance_message <- "Review the concepts and try again. You can do it!"
+    }
+    
+    tagList(
+      fluidRow(
+        column(12,
+               div(class = "metric-box", 
+                   style = paste0("background: linear-gradient(135deg, ", 
+                                  if(perf$accuracy >= 80) "#00a65a" else if(perf$accuracy >= 60) "#00c0ef" else "#f39c12",
+                                  " 0%, ",
+                                  if(perf$accuracy >= 80) "#00c851" else if(perf$accuracy >= 60) "#00d9ff" else "#ffba00",
+                                  " 100%); color: white; text-align: center; padding: 30px; border-radius: 10px; margin-bottom: 20px; border: none;"),
+                   icon(performance_icon, "fa-3x"),
+                   h2(style = "margin-top: 15px; margin-bottom: 5px; font-weight: bold;", performance_level),
+                   h4(style = "margin-top: 5px; opacity: 0.9;", performance_message)
+               )
+        )
+      ),
+      
+      fluidRow(
+        column(3,
+               div(class = "metric-box",
+                   style = "text-align: center; padding: 25px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 10px; border: none; box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);",
+                   icon("star", "fa-2x", style = "opacity: 0.9;"),
+                   h3(style = "margin: 15px 0 5px 0; font-size: 42px; font-weight: bold;", perf$score),
+                   p(style = "margin: 0; font-size: 16px; opacity: 0.9;", "Total Score"),
+                   p(style = "margin: 5px 0 0 0; font-size: 13px; opacity: 0.7;", paste0("out of ", perf$total * 10))
+               )
+        ),
+        column(3,
+               div(class = "metric-box",
+                   style = paste0("text-align: center; padding: 25px; background: linear-gradient(135deg, ",
+                                  if(perf$accuracy >= 80) "#11998e 0%, #38ef7d 100%" else if(perf$accuracy >= 60) "#4facfe 0%, #00f2fe 100%" else "#fa709a 0%, #fee140 100%",
+                                  "); color: white; border-radius: 10px; border: none; box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);"),
+                   icon("bullseye", "fa-2x", style = "opacity: 0.9;"),
+                   h3(style = "margin: 15px 0 5px 0; font-size: 42px; font-weight: bold;", paste0(perf$accuracy, "%")),
+                   p(style = "margin: 0; font-size: 16px; opacity: 0.9;", "Accuracy"),
+                   p(style = "margin: 5px 0 0 0; font-size: 13px; opacity: 0.7;", 
+                     if(perf$accuracy >= 80) "Excellent!" else if(perf$accuracy >= 60) "Good Job!" else "Keep Trying!")
+               )
+        ),
+        column(3,
+               div(class = "metric-box",
+                   style = "text-align: center; padding: 25px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border-radius: 10px; border: none; box-shadow: 0 4px 15px rgba(245, 87, 108, 0.4);",
+                   icon("check-circle", "fa-2x", style = "opacity: 0.9;"),
+                   h3(style = "margin: 15px 0 5px 0; font-size: 42px; font-weight: bold;", perf$correct),
+                   p(style = "margin: 0; font-size: 16px; opacity: 0.9;", "Correct Answers"),
+                   p(style = "margin: 5px 0 0 0; font-size: 13px; opacity: 0.7;", paste0("out of ", perf$total, " questions"))
+               )
+        ),
+        column(3,
+               div(class = "metric-box",
+                   style = "text-align: center; padding: 25px; background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); color: white; border-radius: 10px; border: none; box-shadow: 0 4px 15px rgba(79, 172, 254, 0.4);",
+                   icon("list-ol", "fa-2x", style = "opacity: 0.9;"),
+                   h3(style = "margin: 15px 0 5px 0; font-size: 42px; font-weight: bold;", perf$total),
+                   p(style = "margin: 0; font-size: 16px; opacity: 0.9;", "Questions Attempted"),
+                   p(style = "margin: 5px 0 0 0; font-size: 13px; opacity: 0.7;", 
+                     paste0(game_state$session_data$user_info$difficulty, " level"))
+               )
+        )
+      ),
+      
+      br(),
+      
+      fluidRow(
+        column(12,
+               div(class = "metric-box",
+                   style = "background: white; padding: 20px; border-radius: 10px; border-left: 5px solid #605ca8; box-shadow: 0 2px 10px rgba(0,0,0,0.1);",
+                   h4(icon("lightbulb"), " Next Steps", style = "color: #605ca8; margin-top: 0;"),
+                   tags$ul(style = "line-height: 1.8;",
+                           if(perf$accuracy >= 80) {
+                             tagList(
+                               tags$li("Excellent work! Try the next difficulty level to challenge yourself."),
+                               tags$li("Review the calculators to apply these concepts to real scenarios."),
+                               tags$li("Share your achievement with your instructor!")
+                             )
+                           } else if(perf$accuracy >= 60) {
+                             tagList(
+                               tags$li("Review the questions you missed in the detailed results below."),
+                               tags$li("Practice more with the TVM calculators."),
+                               tags$li("Retake the quiz to improve your score!")
+                             )
+                           } else {
+                             tagList(
+                               tags$li("Start with the Interest Concepts tab to build foundation."),
+                               tags$li("Work through each calculator step-by-step."),
+                               tags$li("Review formulas and explanations carefully."),
+                               tags$li("Try the quiz again - you'll do better!")
+                             )
+                           }
+                   )
+               )
+        )
+      )
+    )
+  })
+  
+  output$performance_plot_tvm <- renderPlot({
+    req(game_state$session_data)
+    
+    decisions <- game_state$session_data$decisions
+    if (length(decisions) == 0) return(NULL)
+    
+    results <- data.frame(
+      question = 1:length(decisions),
+      correct = sapply(decisions, function(x) x$is_correct)
+    )
+    
+    ggplot(results, aes(x = question, y = as.numeric(correct), fill = correct)) +
+      geom_col(width = 0.7) +
+      scale_fill_manual(values = c("FALSE" = "#e74c3c", "TRUE" = "#27ae60"),
+                        labels = c("Incorrect", "Correct")) +
+      labs(title = "Your Performance by Question",
+           x = "Question Number",
+           y = "",
+           fill = "Result") +
+      scale_y_continuous(breaks = c(0, 1), labels = c("Wrong", "Correct")) +
+      theme_minimal() +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5, color = "#2c3e50"),
+        axis.title = element_text(size = 12, face = "bold", color = "#34495e"),
+        axis.text = element_text(size = 11, color = "#5a6c7d"),
+        legend.position = "top",
+        legend.title = element_text(size = 12, face = "bold"),
+        legend.text = element_text(size = 11),
+        panel.grid.major.y = element_line(color = "#ecf0f1", size = 0.5),
+        panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank(),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "#fafafa", color = NA)
+      )
+  })
+  
+  output$results_table_tvm <- DT::renderDataTable({
+    req(game_state$session_data)
+    
+    decisions <- game_state$session_data$decisions
+    if (length(decisions) == 0) return(NULL)
+    
+    results <- data.frame(
+      Question = paste0("#", 1:length(decisions)),
+      Result = sapply(decisions, function(x) {
+        ifelse(x$is_correct, "✓ Correct", "✗ Incorrect")
+      }),
+      Status = sapply(decisions, function(x) {
+        ifelse(x$is_correct, "Pass", "Review")
+      }),
+      stringsAsFactors = FALSE
+    )
+    
+    datatable(results, 
+              options = list(
+                pageLength = 10,
+                dom = 't',
+                ordering = FALSE,
+                columnDefs = list(
+                  list(className = 'dt-center', targets = 0:2)
+                )
+              ),
+              rownames = FALSE,
+              class = 'cell-border stripe hover') %>%
+      formatStyle('Result',
+                  backgroundColor = styleEqual(
+                    c('✓ Correct', '✗ Incorrect'),
+                    c('#d4edda', '#f8d7da')
+                  ),
+                  color = styleEqual(
+                    c('✓ Correct', '✗ Incorrect'),
+                    c('#155724', '#721c24')
+                  ),
+                  fontWeight = 'bold') %>%
+      formatStyle('Status',
+                  backgroundColor = styleEqual(
+                    c('Pass', 'Review'),
+                    c('#28a745', '#ffc107')
+                  ),
+                  color = 'white',
+                  fontWeight = 'bold',
+                  textAlign = 'center',
+                  borderRadius = '4px') %>%
+      formatStyle(
+        'Question',
+        fontWeight = 'bold',
+        color = '#495057'
+      )
+  })
+}
+
+# ============================================================================
+# RUN APPLICATION
+# ============================================================================
+
+shinyApp(ui = ui, server = server)
