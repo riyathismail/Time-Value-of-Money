@@ -776,7 +776,36 @@ ui <- dashboardPage(
           font-family: monospace;
           margin: 10px 0;
         }
+        .footer-credit {
+          position: fixed;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          text-align: center;
+          padding: 8px 10px;
+          font-size: 11px;
+          z-index: 1000;
+          box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
+        }
+        .footer-credit a {
+          color: #ffffff;
+          text-decoration: none;
+          font-weight: 500;
+        }
+        .footer-credit a:hover {
+          text-decoration: underline;
+        }
+        .content-wrapper {
+          padding-bottom: 40px;
+        }
       "))
+    ),
+    
+    tags$div(
+      class = "footer-credit",
+      HTML("Developed by <strong>Dr. M.I.M. Riyath</strong>, South Eastern University of Sri Lanka | Email: <a href='mailto:riyath@seu.ac.lk'>riyath@seu.ac.lk</a>")
     ),
     
     tabItems(
@@ -2101,7 +2130,7 @@ ui <- dashboardPage(
             
             h4("Developed by:"),
             p("Dr. M.I.M. Riyath"),
-            p("Senior Lecturer, Department of Accountancy and Finance"),
+            p("Department of Accountancy and Finance, Faculty of Management and Commerce"),
             p("South Eastern University of Sri Lanka"),
             
             br(),
